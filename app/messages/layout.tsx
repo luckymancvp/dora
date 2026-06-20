@@ -9,6 +9,7 @@ import { UrlSync } from "@/components/messenger/RouteSync";
 import { PendingOpenSync } from "@/components/messenger/PendingOpenSync";
 import { useRealtimeMessages } from "@/lib/hooks/useRealtimeMessages";
 import { usePrefetchTabs } from "@/lib/hooks/usePrefetchTabs";
+import { cn } from "@/lib/utils";
 
 function RealtimeBridge() {
   useRealtimeMessages();
@@ -36,6 +37,27 @@ function TabHotkeys() {
   return null;
 }
 
+// Master–detail: trên mobile chỉ hiện 1 cột tại một thời điểm (danh sách HOẶC khung chat),
+// quyết định theo activeTabId. Trên md+ hiển thị song song như cũ.
+function MessagesPanes() {
+  const { activeTabId } = useTabs();
+  const hasActive = activeTabId !== null;
+  return (
+    <div className="flex h-full">
+      <ConversationList className={hasActive ? "hidden md:flex" : "flex md:flex"} />
+      <div
+        className={cn(
+          "flex-1 flex-col overflow-hidden md:flex",
+          hasActive ? "flex" : "hidden md:flex",
+        )}
+      >
+        <TabBar />
+        <ChatPanel />
+      </div>
+    </div>
+  );
+}
+
 export default function MessagesLayout({ children }: { children: React.ReactNode }) {
   return (
     <TabsProvider>
@@ -46,13 +68,7 @@ export default function MessagesLayout({ children }: { children: React.ReactNode
       <PendingOpenSync />
       {/* children = page sync deep-link (không render gì hiển thị). */}
       {children}
-      <div className="flex h-full">
-        <ConversationList />
-        <div className="hidden flex-1 flex-col overflow-hidden md:flex">
-          <TabBar />
-          <ChatPanel />
-        </div>
-      </div>
+      <MessagesPanes />
     </TabsProvider>
   );
 }

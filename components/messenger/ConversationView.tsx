@@ -10,7 +10,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Send, Info, StickyNote, Paperclip, X, Loader2, Sparkles, BookMarked } from "lucide-react";
+import { Send, Info, StickyNote, Paperclip, X, Loader2, Sparkles, BookMarked, ArrowLeft } from "lucide-react";
 import { TemplatePicker } from "@/components/messenger/TemplatePicker";
 import { MessageList } from "@/components/messenger/MessageList";
 import { useSendMessage } from "@/lib/hooks/useSendMessage";
@@ -22,6 +22,7 @@ import { initials } from "@/lib/format";
 export function ConversationView({
   conversationId,
   meta,
+  onBack,
   infoOpen = false,
   onToggleInfo,
   notesOpen = false,
@@ -29,6 +30,7 @@ export function ConversationView({
 }: {
   conversationId: number;
   meta?: TabMeta;
+  onBack?: () => void;
   infoOpen?: boolean;
   onToggleInfo?: () => void;
   notesOpen?: boolean;
@@ -185,6 +187,15 @@ export function ConversationView({
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-card">
       <header className="flex shrink-0 items-center gap-2.5 border-b border-border px-4 py-3">
+        {onBack ? (
+          <button
+            onClick={onBack}
+            aria-label="Quay lại danh sách"
+            className="-ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary md:hidden"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+        ) : null}
         <Avatar className="h-8 w-8">
           {meta?.avatar ? <AvatarImage src={meta.avatar} alt={name} /> : null}
           <AvatarFallback className="bg-accent text-xs font-bold text-primary">
@@ -230,7 +241,7 @@ export function ConversationView({
 
       {/* Panel gợi ý AI — bám sát ô chat, dùng nội dung đang gõ làm định hướng */}
       {aiOpen && (
-        <div className="shrink-0 border-t border-border bg-info-soft px-6 py-2.5">
+        <div className="shrink-0 border-t border-border bg-info-soft px-3 py-2.5 md:px-6">
           <div className="flex items-center gap-2 text-xs">
             <span className="flex items-center gap-1 font-semibold text-info">
               <Sparkles className="h-3.5 w-3.5" /> Gợi ý AI
@@ -282,7 +293,7 @@ export function ConversationView({
       )}
 
       {/* Composer */}
-      <div className="relative shrink-0 border-t border-border px-6 py-4">
+      <div className="relative shrink-0 border-t border-border px-3 py-4 md:px-6">
         {/* Preview ảnh đã chọn */}
         {(attachments.length > 0 || uploading) && (
           <div className="mb-3 flex flex-wrap gap-2">
