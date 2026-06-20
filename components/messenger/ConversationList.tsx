@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Search, MessageSquareReply, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConversations } from "@/lib/hooks/useConversations";
+import { useShops } from "@/lib/hooks/useShops";
 import { ShopFilter } from "@/components/messenger/ShopFilter";
 import { TagFilter } from "@/components/messenger/TagFilter";
 import { SheetStatusFilter } from "@/components/messenger/SheetStatusFilter";
@@ -20,10 +21,12 @@ const ROW_HEIGHT = 76;
 
 const Row = memo(function Row({
   c,
+  shopName,
   active,
   onClick,
 }: {
   c: ConversationListItem;
+  shopName?: string;
   active: boolean;
   onClick: () => void;
 }) {
@@ -45,6 +48,9 @@ const Row = memo(function Row({
         <div className="flex items-baseline justify-between gap-2">
           <span className="truncate font-bold text-sm text-foreground">
             {c.name || `#${c.conversationId}`}
+            {shopName && (
+              <span className="font-normal text-muted-foreground"> · {shopName}</span>
+            )}
           </span>
           <span className="shrink-0 text-xs text-muted-foreground">
             {timeAgo(c.lastMessageDate)}
@@ -139,6 +145,14 @@ export function ConversationList() {
 
   const { items, data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } =
     useConversations(filters);
+
+  // Map shopUserId → tên shop để nối vào tên khách trong danh sách.
+  const { data: shops } = useShops();
+  const shopNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const s of shops ?? []) m.set(s.userId, s.shopName);
+    return m;
+  }, [shops]);
 
   // Mở nhanh N hội thoại đầu danh sách (tự load đủ trang trước khi mở).
   const BULK_CAP = 100; // trần an toàn cho "Tất cả"
@@ -296,6 +310,7 @@ export function ConversationList() {
                 >
                   <Row
                     c={c}
+                    shopName={shopNameById.get(c.shopUserId)}
                     active={activeTabId === c.conversationId}
                     onClick={() =>
                       openTab(c.conversationId, { name: c.name, avatar: c.avatar })
