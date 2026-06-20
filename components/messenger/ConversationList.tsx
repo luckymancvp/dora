@@ -14,6 +14,7 @@ import type { ConversationFilters, ConversationListItem } from "@/lib/types/etsy
 import { tagClassName, tagLabel } from "@/lib/tags";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
+import { MobileMenuButton } from "@/components/sidebar";
 import { initials, timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -113,7 +114,7 @@ const FilterChip = memo(function FilterChip({
   );
 });
 
-export function ConversationList() {
+export function ConversationList({ className }: { className?: string }) {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [orderHelp, setOrderHelp] = useState(false);
@@ -199,10 +200,13 @@ export function ConversationList() {
   }, [virtualItems, items.length, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   return (
-    <div className="flex w-full max-w-sm flex-col border-r border-border bg-card md:w-80 lg:w-96">
+    <div className={cn("w-full flex-col border-r border-border bg-card md:w-80 lg:w-96", className)}>
       <div className="px-5 pt-6 pb-3">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-medium tracking-tight text-foreground">Đoạn chat</h1>
+          <div className="flex items-center gap-2">
+            <MobileMenuButton className="md:hidden" />
+            <h1 className="text-2xl font-medium tracking-tight text-foreground">Đoạn chat</h1>
+          </div>
           <div className="flex items-center gap-1">
             <button
               onClick={() => setSort((v) => (v === "desc" ? "asc" : "desc"))}

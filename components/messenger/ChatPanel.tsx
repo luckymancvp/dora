@@ -9,13 +9,14 @@ import { SlideInPanel } from "@/components/messenger/SlideInPanel";
 import { useTabs } from "@/lib/store/tabs";
 
 export function ChatPanel() {
-  const { activeTabId, meta } = useTabs();
-  const [infoOpen, setInfoOpen] = useState(true);
+  const { activeTabId, meta, clearActive } = useTabs();
+  const [infoOpen, setInfoOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
 
-  // Mở sẵn panel đơn hàng, đóng panel ghi chú mỗi khi vào/đổi hội thoại.
+  // Mở sẵn panel đơn hàng (chỉ trên desktop ≥lg — mobile là overlay full màn nên để người
+  // dùng tự mở), đóng panel ghi chú mỗi khi vào/đổi hội thoại.
   useEffect(() => {
-    setInfoOpen(true);
+    setInfoOpen(window.matchMedia("(min-width: 1024px)").matches);
     setNotesOpen(false);
   }, [activeTabId]);
 
@@ -35,6 +36,7 @@ export function ChatPanel() {
         key={activeTabId}
         conversationId={activeTabId}
         meta={meta[activeTabId]}
+        onBack={clearActive}
         infoOpen={infoOpen}
         onToggleInfo={() => setInfoOpen((v) => !v)}
         notesOpen={notesOpen}

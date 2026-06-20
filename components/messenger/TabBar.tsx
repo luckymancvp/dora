@@ -49,7 +49,7 @@ export function TabBar() {
   if (openTabs.length === 0) return null;
 
   return (
-    <div className="flex items-end border-b border-border bg-muted pt-1">
+    <div className="hidden items-end border-b border-border bg-muted pt-1 md:flex">
       <div className="flex flex-1 items-end gap-1 overflow-x-auto px-2">
         {openTabs.map((id) => (
           <Tab

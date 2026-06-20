@@ -26,6 +26,8 @@ interface TabsState {
   closeTab: (id: number) => void;
   closeAll: () => void;
   setActive: (id: number) => void;
+  /** Bỏ chọn tab đang active (giữ nguyên danh sách tab) — dùng để quay về danh sách trên mobile. */
+  clearActive: () => void;
   cycleActive: (delta: number) => void;
 }
 
@@ -140,6 +142,8 @@ export function TabsProvider({ children }: { children: React.ReactNode }) {
 
   const setActive = useCallback((id: number) => setActiveTabId(id), []);
 
+  const clearActive = useCallback(() => setActiveTabId(null), []);
+
   // Chuyển active tab theo hướng (+1 kế tiếp, -1 lùi), wrap vòng.
   const cycleActive = useCallback(
     (delta: number) => {
@@ -164,6 +168,7 @@ export function TabsProvider({ children }: { children: React.ReactNode }) {
       closeTab,
       closeAll,
       setActive,
+      clearActive,
       cycleActive,
     }),
     [
@@ -176,6 +181,7 @@ export function TabsProvider({ children }: { children: React.ReactNode }) {
       closeTab,
       closeAll,
       setActive,
+      clearActive,
       cycleActive,
     ],
   );

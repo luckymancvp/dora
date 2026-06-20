@@ -3,6 +3,7 @@ import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Sidebar } from '@/components/sidebar'
 import { Providers } from '@/components/providers'
+import { MobileNavProvider } from '@/lib/store/mobile-nav'
 import './globals.css'
 
 const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] })
@@ -30,10 +31,12 @@ export default function RootLayout({
     <html lang="vi" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} bg-background`}>
       <body className="font-sans antialiased">
         <Providers>
-          <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
-            <Sidebar />
-            <main className="flex-1 overflow-hidden">{children}</main>
-          </div>
+          <MobileNavProvider>
+            <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
+              <Sidebar />
+              <main className="flex-1 overflow-hidden">{children}</main>
+            </div>
+          </MobileNavProvider>
         </Providers>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
