@@ -19,6 +19,21 @@ function getRest(): Ably.Rest | null {
 // Event/channel cho luồng GỬI tin (extension nghe trên channel = shop_name).
 export const CHAT_MESSAGE_EVENT = "chat-message";
 
+// Event tracking (extension đã subscribe sẵn trên channel = shop_name).
+export const FETCH_SHIPMENTS_EVENT = "fetch-shipments";
+export const SEND_TRACKING_EVENT = "send-tracking";
+
+/**
+ * Chọn 1 browser extension đang online trên channel của shop (presence) —
+ * lấy client cuối để đảm bảo chỉ 1 client xử lý. Trả null nếu không có ai online.
+ */
+async function pickTargetClient(channel: Ably.RestChannel): Promise<string | null> {
+  const presence = await channel.presence.get();
+  const members = presence.items ?? [];
+  if (members.length === 0) return null;
+  return members[members.length - 1].clientId ?? null;
+}
+
 /**
  * Publish 1 event mỗi conversation có message mới (best-effort, không throw).
  * Frontend nghe event này để refetch realtime.
@@ -49,14 +64,59 @@ export async function publishChatMessage(
   if (!rest || !shopName) return null;
   const channel = rest.channels.get(shopName);
 
-  // Lấy presence → chọn 1 browser (cái cuối) để chỉ 1 client xử lý.
-  const presence = await channel.presence.get();
-  const members = presence.items ?? [];
-  if (members.length === 0) return null;
-  const targetClientId = members[members.length - 1].clientId;
+  const targetClientId = await pickTargetClient(channel);
   if (!targetClientId) return null;
 
   await channel.publish(CHAT_MESSAGE_EVENT, { ...data, clientId: targetClientId });
+  return targetClientId;
+}
+
+/**
+ * Yêu cầu extension GET shipments của các đơn (event "fetch-shipments").
+ * Extension trả kết quả về POST /v1/extension/trackings/shipments-result kèm `id`.
+ * Trả clientId được nhắm tới, hoặc null nếu shop không có browser online.
+ */
+export async function publishFetchShipments(
+  shopName: string,
+  data: { id: string; shopId: number | null; orderIds: string[] },
+): Promise<string | null> {
+  const rest = getRest();
+  if (!rest || !shopName) return null;
+  const channel = rest.channels.get(shopName);
+
+  const targetClientId = await pickTargetClient(channel);
+  if (!targetClientId) return null;
+
+  await channel.publish(FETCH_SHIPMENTS_EVENT, { ...data, clientId: targetClientId });
+  return targetClientId;
+}
+
+export interface SendTrackingOrder {
+  order_id: string;
+  carrier: number;
+  other_carrier: string;
+  tracking_number: string;
+  note?: string;
+  ship_date?: number;
+}
+
+/**
+ * Yêu cầu extension add tracking lên Etsy (event "send-tracking").
+ * Extension báo trạng thái về POST /v1/extension/trackings/status/{id}.
+ * Trả clientId được nhắm tới, hoặc null nếu shop không có browser online.
+ */
+export async function publishSendTracking(
+  shopName: string,
+  data: { id: string; shopId: number | null; orders: SendTrackingOrder[] },
+): Promise<string | null> {
+  const rest = getRest();
+  if (!rest || !shopName) return null;
+  const channel = rest.channels.get(shopName);
+
+  const targetClientId = await pickTargetClient(channel);
+  if (!targetClientId) return null;
+
+  await channel.publish(SEND_TRACKING_EVENT, { ...data, clientId: targetClientId });
   return targetClientId;
 }
 

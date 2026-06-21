@@ -12,6 +12,7 @@ import {
   MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
+  Truck,
 } from "lucide-react"
 import { signOut, useSession } from "next-auth/react"
 import { cn } from "@/lib/utils"
@@ -40,6 +41,7 @@ export function MobileMenuButton({ className }: { className?: string }) {
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/messages", label: "Messenger", icon: MessageCircle },
+  { href: "/tracking", label: "Tracking", icon: Truck },
 ]
 
 const COLLAPSE_KEY = "sidebar.collapsed.v1"

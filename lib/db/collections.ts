@@ -3,6 +3,7 @@ import clientPromise from "@/lib/mongodb-client";
 import type { AutoReplyDoc, ConversationDoc, MessageDoc, MessageTemplateDoc } from "@/lib/types/etsy";
 import type { SheetConfigDoc, SheetRowDoc } from "@/lib/types/sheets";
 import type { OrderStatusDoc } from "@/lib/types/order-status";
+import type { TrackingJob } from "@/lib/types/tracking";
 import { ensureIndexes } from "@/lib/db/indexes";
 
 // Lazy ensure index một lần cho mỗi process (cache global cho dev hot-reload).
@@ -64,4 +65,9 @@ export async function getOrderStatusesCollection(): Promise<Collection<OrderStat
 export async function getMessageTemplatesCollection(): Promise<Collection<MessageTemplateDoc>> {
   const db = await getDb();
   return db.collection<MessageTemplateDoc>("message_templates");
+}
+
+export async function getTrackingJobsCollection(): Promise<Collection<TrackingJob>> {
+  const db = await getDb();
+  return db.collection<TrackingJob>("tracking_jobs");
 }

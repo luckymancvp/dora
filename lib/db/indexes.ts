@@ -92,6 +92,12 @@ const SHEET_ROW_INDEXES: IndexDef[] = [
   { keys: { configId: 1 }, options: { name: "idx_config_id" } },
 ];
 
+const TRACKING_JOB_INDEXES: IndexDef[] = [
+  // Liệt kê job gần nhất + dọn job cũ.
+  { keys: { created_at: -1 }, options: { name: "idx_created_at" } },
+  { keys: { shop_name: 1, created_at: -1 }, options: { name: "idx_shop_created" } },
+];
+
 function isAlreadyExistsError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return (
@@ -121,4 +127,5 @@ export async function ensureIndexes(db: Db): Promise<void> {
   await createIndexes(db, "sheet_configs", SHEET_CONFIG_INDEXES);
   await createIndexes(db, "sheet_rows", SHEET_ROW_INDEXES);
   await createIndexes(db, "message_templates", MESSAGE_TEMPLATE_INDEXES);
+  await createIndexes(db, "tracking_jobs", TRACKING_JOB_INDEXES);
 }
