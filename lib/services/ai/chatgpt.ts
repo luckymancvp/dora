@@ -45,33 +45,13 @@ export function prepareDifyPrompt(ctx: PromptContext, input: string): string {
   }
   prompt += "</conversation>\n\n";
 
-  prompt += "From now on you are the greatest customer support on this Etsy shop.\n\n";
-  prompt += "INPUT STRUCTURE:\n";
-  prompt += "- The <conversation> above contains messages from the customer and the shop\n";
+  // Chỉ chở hội thoại + định hướng của shop owner. Mọi chỉ dẫn (task, rules,
+  // output format, tag, sample) đã nằm trong systemInstruction nên không lặp lại
+  // ở đây để tránh trùng token trong cùng một request Gemini.
   if (input) {
-    prompt += `- Shop owner's guidance (if any): "${input}"\n`;
+    prompt += `Shop owner's guidance for this reply: "${input}"\n\n`;
   }
-  prompt += "\nYOUR TASK:\n";
-  prompt += "Generate THREE alternative reply options the shop could send to the customer.\n\n";
-  prompt += "OPTION INTENT:\n";
-  prompt += "- agree: empathize and acknowledge responsibility WITHOUT offering compensation\n";
-  prompt += "- neutral: calmly explain the situation without blame\n";
-  prompt += "- apologize: sincerely apologize and acknowledge disappointment\n\n";
-  prompt += "CRITICAL RULES:\n";
-  prompt += "1. ALWAYS reply in the SAME LANGUAGE as the customer's most recent message\n";
-  prompt += "2. Reply ONLY as the shop, never as the customer\n";
-  prompt += "3. Each option must be SHORT (1–3 sentences)\n";
-  prompt += "4. Use warm, friendly chat tone (not formal, not email)\n";
-  prompt += "5. Do NOT add greetings or signatures\n";
-  prompt +=
-    "6. Do NOT mention or promise refunds, returns, replacements, discounts, or compensation unless explicitly instructed\n";
-  prompt += "7. Do NOT invent policies, timelines, or outcomes\n";
-  prompt += "8. If the customer is upset, respond with empathy, not arguments\n\n";
-  prompt += "OUTPUT FORMAT (STRICT):\n";
-  prompt += "Return ONLY valid JSON with exactly these keys:\n";
-  prompt += '{ "agree": "...", "neutral": "...", "apologize": "..." }\n';
-  prompt += "Do NOT include explanations, markdown, or extra text.\n\n";
-  prompt += "Your response:\n";
+  prompt += "Generate the three reply options as JSON per the system instruction.\n";
 
   return prompt;
 }
@@ -123,12 +103,10 @@ If the CURRENT state of conversation doesn't clearly fit any tag above, use "sug
 
 ## CRITICAL RULES:
 1. ALWAYS respond in the SAME LANGUAGE as the customer's most recent message
-2. Keep each response SHORT (1-4 sentences max)
-3. Use warm, friendly chat style - NOT formal emails
-4. Do NOT add greetings like "Dear..." or signatures
-5. Each response should be DIFFERENT in tone but address the same issue
-6. If shop owner provides guidance, incorporate it into all 3 responses appropriately
-7. For tag classification, analyze ALL messages in the conversation, not just the last one
+2. MATCH the shop's own writing style and tone from how the shop has been replying in this conversation (formality, length, warmth, emoji use, greetings/sign-offs). Mirror the way the shop already talks to this customer — do NOT impose a different style.
+3. Each response should be DIFFERENT in tone but address the same issue
+4. If shop owner provides guidance, incorporate it into all 3 responses appropriately
+5. For tag classification, analyze ALL messages in the conversation, not just the last one
 
 ## RESPONSE FORMAT (JSON only - ALL FIELDS REQUIRED):
 {
@@ -146,45 +124,6 @@ If the CURRENT state of conversation doesn't clearly fit any tag above, use "sug
 4. If no tag applies, ONLY suggested_tag and tag_reason can be empty strings
 5. If you return empty strings for agree/neutral/apologize, the response will be rejected
 
-## SAMPLE RESPONSES TO LEARN FROM:
-
-### For customer sending photo for design (TAG: send_photo_AI):
-- agree: "Thanks so much for sending the image! We'll get started on your design right away."
-- neutral: "We've received your image. We'll review it and let you know if we have any questions."
-- apologize: "Thank you for your patience in sending the image! We'll make sure to create something beautiful for you."
-- suggested_tag: "send_photo_AI"
-- tag_reason: "Customer is sending image for product design"
-
-### For order delays:
-- agree: "Yes, we will do our best to expedite your order and send it to you as soon as possible. Thank you for your patience!"
-- neutral: "We are currently processing your order and will update you with tracking information once it ships. Please allow a few more days."
-- apologize: "We sincerely apologize for the delay in sending your order. We are doing everything we can to get it to you as soon as possible."
-
-### For refund requests:
-- agree: "Yes, we will cancel the order and issue a refund for you. Please allow a few days for the refund to be processed. Thank you for your understanding!"
-- neutral: "We have received your request. Could you please confirm if you would like a full refund or would prefer a replacement instead?"
-- apologize: "We are truly sorry that our product did not meet your expectations. We will process the refund for you right away."
-
-### For product issues:
-- agree: "Yes, we would be happy to send you a replacement. We will process it as soon as possible!"
-- neutral: "Could you please send us a picture of the item you received? This will help us resolve the issue more effectively."
-- apologize: "We are so sorry to hear that there was an issue with your order. We truly apologize for the inconvenience and will make it right."
-
-### For tracking inquiries:
-- agree: "Yes, your order is on its way! Here is the tracking link for your reference. We will do our best to ensure it reaches you soon."
-- neutral: "The package is still being processed by the carrier. Tracking updates will appear once they have assigned an estimated delivery date."
-- apologize: "We apologize for the confusion with your order tracking. After checking, we found that the order is still in transit."
-
-### For customization requests:
-- agree: "Yes, we can customize the order as per your request! Please send us the details and we will get started right away."
-- neutral: "Thank you for reaching out! Could you please provide us with the specific details of the customization you would like?"
-- apologize: "We apologize, but unfortunately we cannot accommodate that specific customization. We hope you understand our position."
-
-### For delivery confirmation:
-- agree: "Thank you so much for letting us know you received the item! We are so glad you love it. If you have a moment, we would appreciate a 5-star review!"
-- neutral: "Thank you for your confirmation. If you need any further assistance, feel free to let us know."
-- apologize: "We apologize if there were any issues during delivery. Please let us know if everything arrived in good condition."
-
 `;
 
   if (input) {
@@ -201,11 +140,11 @@ If the CURRENT state of conversation doesn't clearly fit any tag above, use "sug
   return sb;
 }
 
-/** Mirror CallGeminiAPI: gemini-2.5-flash, JSON output. */
+/** Mirror CallGeminiAPI: gemini-3.5-flash (thinking tắt), JSON output. */
 export async function callGeminiAPI(prompt: string, input: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY chưa cấu hình");
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`;
 
   const body = {
     systemInstruction: { parts: [{ text: buildGeminiSystemInstruction(input) }] },
@@ -216,6 +155,8 @@ export async function callGeminiAPI(prompt: string, input: string): Promise<stri
       topP: 0.95,
       topK: 40,
       responseMimeType: "application/json",
+      // Tắt thinking để phản hồi nhanh & rẻ hơn (chỉ sinh gợi ý ngắn).
+      thinkingConfig: { thinkingBudget: 0 },
     },
   };
 

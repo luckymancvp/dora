@@ -191,6 +191,9 @@ export function ConversationView({
   const useSuggestion = (text: string) => {
     if (text) setDraft(text);
     setAiOpen(false);
+    // Trả focus về ô chat để Enter gửi được ngay (nếu không, focus kẹt ở
+    // nút gợi ý vừa bị unmount → rơi về body → Enter không kích hoạt onKeyDown).
+    textareaRef.current?.focus();
   };
 
   const aiOptions: { key: string; label: string; text: string }[] = aiResult
