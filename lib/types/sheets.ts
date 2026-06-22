@@ -26,6 +26,8 @@ export interface SheetConfigDoc {
   lastSyncError: string | null;
   rowCount: number;
   syncing: boolean;
+  /** Thời điểm chiếm cờ syncing lần gần nhất — để phát hiện & chiếm lại khoá "treo". */
+  syncStartedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

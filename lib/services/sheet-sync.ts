@@ -14,6 +14,12 @@ import type { SheetConfigDoc, SheetRowDoc } from "@/lib/types/sheets";
 /** TTL chỉ mục: dữ liệu liệt kê có thể cũ tối đa ~2 phút. */
 export const SYNC_TTL_MS = 2 * 60 * 1000;
 
+/**
+ * Ngưỡng coi khoá `syncing` là "treo": nếu cờ được chiếm quá lâu (process chết giữa chừng,
+ * không kịp nhả cờ) thì cho phép chiếm lại — tránh kẹt vĩnh viễn 1 config.
+ */
+export const STALE_LOCK_MS = 5 * 60 * 1000;
+
 const UPSERT_BATCH = 2000;
 
 function isStale(cfg: SheetConfigDoc): boolean {
@@ -56,14 +62,22 @@ export async function syncSheetNow(configId: ObjectId): Promise<{ rowCount: numb
   const cfg = await configs.findOne({ _id: configId });
   if (!cfg) return { rowCount: 0 };
 
-  // Chiếm cờ syncing (atomic) — nếu đang sync thì bỏ qua.
+  // Chiếm cờ syncing (atomic). Khoá tự phục hồi: nếu lần sync trước treo quá STALE_LOCK_MS
+  // (process chết giữa chừng, không nhả cờ) thì vẫn cho chiếm lại để không kẹt vĩnh viễn.
+  const runStart = new Date();
+  const staleCutoff = new Date(runStart.getTime() - STALE_LOCK_MS);
   const claim = await configs.updateOne(
-    { _id: configId, syncing: { $ne: true } },
-    { $set: { syncing: true } },
+    {
+      _id: configId,
+      $or: [
+        { syncing: { $ne: true } },
+        // syncStartedAt cũ/null/thiếu → coi như khoá treo, chiếm lại.
+        { syncStartedAt: { $not: { $gt: staleCutoff } } },
+      ],
+    },
+    { $set: { syncing: true, syncStartedAt: runStart } },
   );
   if (claim.modifiedCount === 0) return { rowCount: cfg.rowCount ?? 0 };
-
-  const runStart = new Date();
   try {
     const sheets = await getAuthorizedSheetsClient();
 
@@ -149,6 +163,7 @@ export async function syncSheetNow(configId: ObjectId): Promise<{ rowCount: numb
       {
         $set: {
           syncing: false,
+          syncStartedAt: null,
           lastSyncedAt: new Date(),
           lastSyncError: null,
           rowCount,
@@ -167,7 +182,7 @@ export async function syncSheetNow(configId: ObjectId): Promise<{ rowCount: numb
           : "sync failed";
     await configs.updateOne(
       { _id: configId },
-      { $set: { syncing: false, lastSyncError: message, updatedAt: new Date() } },
+      { $set: { syncing: false, syncStartedAt: null, lastSyncError: message, updatedAt: new Date() } },
     );
     if (err instanceof GoogleNotConnectedError || isInvalidGrantError(err)) {
       throw new GoogleNotConnectedError();
