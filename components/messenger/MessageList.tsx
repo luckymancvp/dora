@@ -168,6 +168,7 @@ export function MessageList({
   const prevLenRef = useRef(0);
   const fetchingOlderRef = useRef(false);
   const didInitialScrollRef = useRef(false);
+  const atBottomRef = useRef(true);
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -219,6 +220,27 @@ export function MessageList({
     const el = parentRef.current;
     if (el && pending.length > 0) el.scrollTop = el.scrollHeight;
   }, [pending.length]);
+
+  // Bám đáy khi vùng tin nhắn co lại (mở panel gợi ý AI, gõ nhiều dòng, đính kèm ảnh…)
+  // để tin mới nhất không bị panel AI/composer che mất. Chỉ bám khi người dùng đang ở đáy.
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const NEAR = 120;
+    const updateAtBottom = () => {
+      atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR;
+    };
+    updateAtBottom();
+    el.addEventListener("scroll", updateAtBottom, { passive: true });
+    const ro = new ResizeObserver(() => {
+      if (atBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", updateAtBottom);
+      ro.disconnect();
+    };
+  }, []);
 
   const empty = !isLoading && items.length === 0 && pending.length === 0;
 

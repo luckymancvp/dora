@@ -436,6 +436,8 @@ function SheetRowDialog({
 /** 1 dòng sheet khớp đơn: Item ID + popup sửa-tất-cả + form sửa nhanh các field chính. */
 function MatchEditor({ match, onSaved }: { match: OrderRowMatch; onSaved: () => void }) {
   const fields = EDITABLE_SHEET_FIELDS.filter((f) => f in match.values);
+  // Tracking (chỉ đọc) — hiện khi sheet có dữ liệu, trống thì ẩn.
+  const tracking = (match.values["Tracking"] ?? "").trim();
   const [draft, setDraft] = useState<Record<string, string>>(() =>
     Object.fromEntries(fields.map((f) => [f, match.values[f] ?? ""])),
   );
@@ -503,6 +505,24 @@ function MatchEditor({ match, onSaved }: { match: OrderRowMatch; onSaved: () => 
 
       {open ? (
         <>
+          {tracking ? (
+            <div className="mt-2 flex items-start gap-1.5 text-xs">
+              <span className="shrink-0 font-semibold text-foreground">Tracking:</span>
+              {/^https?:\/\//.test(tracking) ? (
+                <a
+                  href={tracking}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="break-all text-primary hover:underline"
+                >
+                  {tracking}
+                </a>
+              ) : (
+                <CopyCode value={tracking} className="break-all text-muted-foreground" />
+              )}
+            </div>
+          ) : null}
+
           <div className="mt-2 flex flex-col gap-2.5">
             {fields.map((f) => (
               <label key={f} className="block">
