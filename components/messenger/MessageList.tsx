@@ -9,6 +9,31 @@ import { etsyText, initials, timeAgo } from "@/lib/format";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 
+// Tách text thành các đoạn, biến URL thành link bấm được.
+const URL_RE = /((?:https?:\/\/|www\.)[^\s]+)/gi;
+
+function linkify(text: string, linkClass: string) {
+  const parts = text.split(URL_RE);
+  return parts.map((part, i) => {
+    if (i % 2 === 1) {
+      const href = part.startsWith("http") ? part : `https://${part}`;
+      return (
+        <a
+          key={i}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={linkClass}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {part}
+        </a>
+      );
+    }
+    return part;
+  });
+}
+
 function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -72,7 +97,13 @@ const Bubble = memo(function Bubble({
             m.fromMe ? "bg-primary text-white" : "bg-secondary text-foreground",
           )}
         >
-          {etsyText(m.message)}
+          {linkify(
+            etsyText(m.message),
+            cn(
+              "underline underline-offset-2 break-all hover:opacity-80",
+              m.fromMe ? "text-white font-medium" : "text-primary",
+            ),
+          )}
         </div>
       )}
       {hasImages && (
