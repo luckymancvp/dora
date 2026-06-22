@@ -46,6 +46,7 @@ interface Job {
   shop_name: string;
   phase: Phase;
   orders: JobOrder[];
+  error?: string;
 }
 
 interface ParsedRow {
@@ -156,12 +157,13 @@ export default function TrackingPage() {
     try {
       const settled = await Promise.all(
         valid.map(async (v) => {
-          const shopId = shops?.find((s) => s.shopName === v.shopName)?.userId;
           try {
+            // KHÔNG gửi shopId: userId trong dora-1 là Etsy user_id, KHÔNG phải shop_id.
+            // Để null → extension tự lấy shop_id đúng qua getShopId() từ tab đang login.
             const res = await fetch("/api/tracking/jobs", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ shopName: v.shopName, shopId: shopId ?? null, orders: v.parsed }),
+              body: JSON.stringify({ shopName: v.shopName, shopId: null, orders: v.parsed }),
             });
             const data = (await res.json()) as { job?: Job; error?: string };
             if (!res.ok || !data.job) {
@@ -469,7 +471,7 @@ const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, 
   );
 
   const summary = useMemo(() => {
-    if (job.phase !== "COMPLETED") return null;
+    if (job.phase !== "COMPLETED" || job.error) return null;
     const sent = job.orders.filter((o) => o.selected);
     const verified = sent.filter((o) => o.verify === "VERIFIED").length;
     const mismatch = sent.filter((o) => o.verify === "MISMATCH").length;
@@ -497,10 +499,26 @@ const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, 
         <div className="text-sm text-muted-foreground">
           Shop: <strong className="text-foreground">{job.shop_name}</strong> · {job.orders.length} đơn
         </div>
-        <PhaseBadge phase={job.phase} />
+        {job.error ? (
+          <span className="rounded-full bg-destructive/15 px-2.5 py-1 text-xs font-medium text-destructive">
+            Lỗi
+          </span>
+        ) : (
+          <PhaseBadge phase={job.phase} />
+        )}
       </div>
 
-      {(job.phase === "PRECHECK" || job.phase === "ADDING" || job.phase === "VERIFY") && (
+      {job.error && (
+        <div className="flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm">
+          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+          <span>
+            Không lấy được tracking từ Etsy: <strong>{job.error}</strong>. Chưa thay đổi gì trên Etsy — hãy
+            kiểm tra shop/đăng nhập rồi tạo lượt mới.
+          </span>
+        </div>
+      )}
+
+      {!job.error && (job.phase === "PRECHECK" || job.phase === "ADDING" || job.phase === "VERIFY") && (
         <div className="flex items-center gap-2 rounded-xl bg-secondary px-4 py-3 text-sm">
           <Loader2 className="h-4 w-4 animate-spin text-primary" />
           {job.phase === "PRECHECK" && "Đang kiểm tra tracking hiện có trên Etsy…"}

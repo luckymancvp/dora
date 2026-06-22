@@ -128,9 +128,42 @@ export async function createJob(params: {
  * - PRECHECK: đánh dấu mỗi đơn CLEAR (chưa có tracking) / EXISTS (đã có) → AWAIT_CONFIRM.
  * - VERIFY: so tracking trả về với tracking đã gửi → VERIFIED / MISMATCH → COMPLETED.
  */
-export async function applyShipmentsResult(id: string, shipments: ShipmentResultItem[]): Promise<boolean> {
+export async function applyShipmentsResult(
+  id: string,
+  shipments: ShipmentResultItem[],
+  error?: string,
+): Promise<boolean> {
   const job = await getJobDoc(id);
   if (!job) return false;
+
+  // GET shipments thất bại (vd shop_id sai) → KHÔNG được coi là "chưa có tracking".
+  if (error) {
+    const coll = await getTrackingJobsCollection();
+    if (job.phase === "PRECHECK") {
+      // Dừng job, báo lỗi để người dùng sửa rồi tạo lại — tránh add đè nhầm.
+      await coll.updateOne(
+        { _id: job._id },
+        { $set: { phase: "COMPLETED", error, updated_at: new Date() } },
+      );
+      return true;
+    }
+    if (job.phase === "VERIFY") {
+      // Đã add rồi nhưng không verify được → đánh dấu SKIPPED, không coi là MISMATCH.
+      for (const o of job.orders) {
+        if (o.add_status === "DONE" && o.verify === "PENDING") {
+          o.verify = "SKIPPED";
+          o.message = "Đã add nhưng không verify được: " + error;
+        }
+      }
+      await coll.updateOne(
+        { _id: job._id },
+        { $set: { orders: job.orders, phase: "COMPLETED", error, updated_at: new Date() } },
+      );
+      return true;
+    }
+    return false;
+  }
+
   const map = indexShipments(shipments);
 
   if (job.phase === "PRECHECK") {

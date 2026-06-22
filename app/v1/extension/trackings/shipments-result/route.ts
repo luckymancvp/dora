@@ -13,12 +13,13 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as {
       id?: string;
       shipments?: ShipmentResultItem[];
+      error?: string;
     };
     if (!body.id) {
       return corsJson({ error: "missing id" }, { status: 400 });
     }
     const shipments = Array.isArray(body.shipments) ? body.shipments : [];
-    const ok = await applyShipmentsResult(body.id, shipments);
+    const ok = await applyShipmentsResult(body.id, shipments, body.error);
     return corsJson({ ok });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

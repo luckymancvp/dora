@@ -49,6 +49,8 @@ export interface TrackingJob {
   sender_email: string;
   phase: TrackingPhase;
   orders: TrackingJobOrder[];
+  /** Lỗi từ extension khi GET shipments (vd shop_id sai). Set thì FE báo lỗi, không coi là CLEAR. */
+  error?: string;
   created_at: Date;
   updated_at: Date;
 }
