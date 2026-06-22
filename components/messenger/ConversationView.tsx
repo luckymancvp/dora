@@ -20,7 +20,7 @@ import type { AIResponse } from "@/lib/types/etsy";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { initials } from "@/lib/format";
 
-// Khớp với ALLOWED ở app/api/uploads/route.ts.
+// Loại ảnh hợp lệ — khớp với ALLOWED ở app/api/uploads/route.ts.
 const ALLOWED_IMAGE_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -94,17 +94,17 @@ export function ConversationView({
     try {
       const urls: string[] = [];
       for (const f of files) {
-        if (!ALLOWED_IMAGE_TYPES.has(f.type)) {
-          alert(`Tải ảnh thất bại: loại file không hợp lệ (${f.type || "unknown"})`);
+        if (f.type && !ALLOWED_IMAGE_TYPES.has(f.type)) {
+          alert(`Tải ảnh thất bại: loại file không hợp lệ (${f.type})`);
           continue;
         }
-        // Upload trực tiếp lên Vercel Blob (qua token từ /api/uploads),
-        // bỏ qua giới hạn 4.5MB của Serverless. upload() tự xử lý phản hồi
-        // và ném Error rõ ràng nếu thất bại (không còn lỗi parse JSON).
+        // Upload trực tiếp lên Vercel Blob qua token từ /api/uploads, bỏ qua
+        // giới hạn 4.5MB của Serverless → không giới hạn dung lượng. upload()
+        // tự xử lý phản hồi và ném Error rõ ràng nếu thất bại.
         const blob = await upload(f.name || "image.png", f, {
           access: "public",
           handleUploadUrl: "/api/uploads",
-          contentType: f.type,
+          contentType: f.type || undefined,
         });
         urls.push(blob.url);
       }

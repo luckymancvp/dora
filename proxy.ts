@@ -10,9 +10,12 @@ export default auth((req) => {
 
   // Extension sync endpoints (/v1/*) được gọi không có session — bỏ qua auth.
   // TODO: thêm shared-secret token cho /v1 như system_token của dora-backend.
+  // /api/uploads: webhook blob.upload-completed của Vercel gọi không kèm cookie;
+  // route tự kiểm auth() khi cấp token và xác thực chữ ký webhook nên an toàn.
   if (
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/api/health") ||
+    pathname.startsWith("/api/uploads") ||
     pathname.startsWith("/v1/")
   )
     return NextResponse.next();
