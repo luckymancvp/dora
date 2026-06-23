@@ -255,9 +255,15 @@ export function ConversationView({
 
       <MessageList conversationId={conversationId} pending={pending} />
 
-      {/* Panel gợi ý AI — bám sát ô chat, dùng nội dung đang gõ làm định hướng */}
+      {/* Panel gợi ý AI — bám sát ô chat, dùng nội dung đang gõ làm định hướng.
+          translate="no": chặn extension dịch trang (Google Translate) bọc/dời text node
+          trong subtree động này — nếu không, React swap icon/option sẽ gây
+          "insertBefore ... not a child of this node" và sập cả panel. */}
       {aiOpen && (
-        <div className="shrink-0 border-t border-border bg-info-soft px-3 py-2.5 md:px-6">
+        <div
+          translate="no"
+          className="shrink-0 border-t border-border bg-info-soft px-3 py-2.5 md:px-6"
+        >
           <div className="flex items-center gap-2 text-xs">
             <span className="flex items-center gap-1 font-semibold text-info">
               <Sparkles className="h-3.5 w-3.5" /> Gợi ý AI
@@ -291,7 +297,7 @@ export function ConversationView({
           {aiLoading && aiOptions.length === 0 ? (
             <p className="mt-2 text-xs text-muted-foreground">Đang tạo gợi ý…</p>
           ) : aiOptions.length > 0 ? (
-            <div className="mt-2 grid gap-2 sm:grid-cols-3">
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
               {aiOptions.map((o) => (
                 <button
                   key={o.key}

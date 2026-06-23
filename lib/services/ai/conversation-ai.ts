@@ -38,12 +38,11 @@ export async function createAIResponse(
   if (process.env.MOCK_AI_RESPONSE === "true") {
     const mock: AIResponse = {
       options: [
-        { label: "Đề xuất giải pháp", text: "Yes, we'll take care of this for you right away!" },
+        { label: "Trả lời thẳng", text: "Yes, we'll take care of this for you right away!" },
         {
-          label: "Hỏi thêm thông tin",
-          text: "Thanks for reaching out — could you share a bit more detail so we can help?",
+          label: "Hỏi 1 câu nhanh",
+          text: "Could you share a bit more detail so we can sort this out for you?",
         },
-        { label: "Trấn an & hẹn cập nhật", text: "We're so sorry about this. Let us make it right for you." },
       ],
       suggested_tag: "",
       tag_reason: "",
