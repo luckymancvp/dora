@@ -10,16 +10,18 @@
  *     Bảng ở lại để đánh dấu hội thoại đã mở (reset được).
  */
 
-/** 1 hội thoại cần mở (kèm meta để hiện tên/avatar trên tab). */
+/** 1 hội thoại cần mở (kèm meta để hiện tên/avatar/shop trên tab). */
 export interface OpenEntry {
   id: number;
   name?: string;
   avatar?: string;
+  shop?: string;
 }
 
 const STAGE_KEY = "messenger.openMultiple.v1";
 const OPENED_KEY = "messenger.openedMarks.v1";
 const BATCH_PREFIX = "messenger.batch.";
+const SPLIT_KEY = "messenger.openMultiple.split.v1";
 
 function read(key: string): OpenEntry[] {
   if (typeof window === "undefined") return [];
@@ -95,6 +97,52 @@ export function setOpenedIds(ids: number[]): void {
 }
 export function clearOpenedIds(): void {
   remove(OPENED_KEY);
+}
+
+/**
+ * Tuỳ chọn "chia việc cho nhiều người" (lưu cục bộ mỗi máy).
+ * `people` = tổng số người chia nhau; `part` = mình là người số mấy (1-based).
+ * Vì danh sách hội thoại lấy từ cùng nguồn (dashboard) cho mọi user, chỉ cần
+ * cắt theo thứ tự id cố định là mọi máy ra cùng các phần — không trùng, không sót.
+ */
+export interface SplitPref {
+  people: number;
+  part: number;
+}
+
+export function readSplit(): SplitPref {
+  if (typeof window === "undefined") return { people: 1, part: 1 };
+  try {
+    const raw = localStorage.getItem(SPLIT_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      const people = Number.isFinite(p?.people) ? Math.max(1, Math.floor(p.people)) : 1;
+      const part = Number.isFinite(p?.part) ? Math.floor(p.part) : 1;
+      return { people, part: Math.min(Math.max(1, part), people) };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { people: 1, part: 1 };
+}
+
+export function writeSplit(pref: SplitPref): void {
+  write(SPLIT_KEY, pref);
+}
+
+/** Cắt mảng thành `parts` phần liên tiếp gần đều nhau (phần đầu nhận phần dư). */
+export function splitEven<T>(arr: T[], parts: number): T[][] {
+  const n = Math.max(1, Math.floor(parts));
+  const out: T[][] = [];
+  const base = Math.floor(arr.length / n);
+  const extra = arr.length % n;
+  let start = 0;
+  for (let i = 0; i < n; i++) {
+    const size = base + (i < extra ? 1 : 0);
+    out.push(arr.slice(start, start + size));
+    start += size;
+  }
+  return out;
 }
 
 export { STAGE_KEY, OPENED_KEY };

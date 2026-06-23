@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { ExternalLink } from "lucide-react";
 import { useMessageOverview } from "@/lib/hooks/useAnalytics";
-import type { AnalyticsFilters, UnreadConvItem } from "@/lib/types/etsy";
+import type { AnalyticsFilters } from "@/lib/types/etsy";
 import { PanelCard, StatCard } from "./PanelCard";
 import { useOpenMultiple } from "./useOpenMultiple";
 
@@ -14,9 +14,13 @@ export function MessageOverview({ filters }: { filters: AnalyticsFilters }) {
   const totals = data?.totals ?? { total: 0, unread: 0, completed: 0 };
   const shops = data?.shopBreakdown ?? [];
 
-  // Gộp toàn bộ hội thoại chưa trả lời (cho nút "Mở tất cả tin chưa đọc").
-  const allUnread = useMemo<UnreadConvItem[]>(
-    () => shops.flatMap((s) => s.unreadConversations),
+  // Gộp toàn bộ hội thoại chưa trả lời (cho nút "Mở tất cả tin chưa đọc"),
+  // đính kèm tên shop để bảng "mở nhiều" hiển thị được.
+  const allUnread = useMemo(
+    () =>
+      shops.flatMap((s) =>
+        s.unreadConversations.map((c) => ({ ...c, shop: s.shopName })),
+      ),
     [shops],
   );
 
@@ -92,7 +96,11 @@ export function MessageOverview({ filters }: { filters: AnalyticsFilters }) {
                     {s.unreadConversations.length > 0 ? (
                       <button
                         type="button"
-                        onClick={() => openMultiple(s.unreadConversations)}
+                        onClick={() =>
+                          openMultiple(
+                            s.unreadConversations.map((c) => ({ ...c, shop: s.shopName })),
+                          )
+                        }
                         className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-xs font-bold text-primary transition-colors hover:bg-accent"
                       >
                         Mở {s.unreadConversations.length}
