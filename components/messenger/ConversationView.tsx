@@ -196,13 +196,9 @@ export function ConversationView({
     textareaRef.current?.focus();
   };
 
-  const aiOptions: { key: string; label: string; text: string }[] = aiResult
-    ? [
-        { key: "agree", label: "Đồng ý", text: aiResult.agree },
-        { key: "neutral", label: "Trung lập", text: aiResult.neutral },
-        { key: "apologize", label: "Xin lỗi", text: aiResult.apologize },
-      ].filter((o) => o.text)
-    : [];
+  const aiOptions: { key: string; label: string; text: string }[] = (aiResult?.options ?? [])
+    .map((o, i) => ({ key: String(i), label: o.label, text: o.text }))
+    .filter((o) => o.text);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-card">

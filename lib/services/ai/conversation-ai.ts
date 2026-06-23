@@ -31,17 +31,20 @@ export async function createAIResponse(
   const hasReplied = etsy["has_replied"] === true;
   // DORA: nếu không có guidance và shop đã trả lời → không sinh gợi ý (tránh tốn API vô ích).
   if (!input && hasReplied) {
-    return { solutions: [], message: "", agree: "", neutral: "", apologize: "" };
+    return { options: [] };
   }
 
   // Mock cho dev/UI (mirror MOCK_AI_RESPONSE của DORA).
   if (process.env.MOCK_AI_RESPONSE === "true") {
     const mock: AIResponse = {
-      solutions: ["Provide full refund", "Send replacement order", "Offer store credit"],
-      message: "Hello, we truly apologize for the inconvenience.",
-      agree: "Yes, we'll take care of this for you right away!",
-      neutral: "Thanks for reaching out — could you share a bit more detail so we can help?",
-      apologize: "We're so sorry about this. Let us make it right for you.",
+      options: [
+        { label: "Đề xuất giải pháp", text: "Yes, we'll take care of this for you right away!" },
+        {
+          label: "Hỏi thêm thông tin",
+          text: "Thanks for reaching out — could you share a bit more detail so we can help?",
+        },
+        { label: "Trấn an & hẹn cập nhật", text: "We're so sorry about this. Let us make it right for you." },
+      ],
       suggested_tag: "",
       tag_reason: "",
     };

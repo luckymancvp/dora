@@ -3,7 +3,7 @@ import { auth } from "@/auth";
 import { createAIResponse } from "@/lib/services/ai/conversation-ai";
 
 // GET /api/conversations/:conversation_id/ai?input=optional_guidance
-// Sinh 3 gợi ý (agree/neutral/apologize) + tag. Mirror GET /v1/conversations/ai/:id của DORA.
+// Sinh 3 gợi ý (options[] theo hướng tiếp cận) + tag phân loại.
 export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ conversation_id: string }> },

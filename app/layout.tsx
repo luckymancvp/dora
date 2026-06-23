@@ -13,9 +13,22 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://dora-chat-mu.vercel.app'),
   title: 'EtsyChat — Nhắn tin trực tuyến',
-  description: 'Ứng dụng chat đơn giản, nhanh và đẹp.',
+  description: 'Hệ thống chăm sóc khách hàng',
   generator: 'v0.app',
+  openGraph: {
+    title: 'EtsyChat — Nhắn tin trực tuyến',
+    description: 'Hệ thống chăm sóc khách hàng',
+    siteName: 'EtsyChat',
+    type: 'website',
+    locale: 'vi_VN',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'EtsyChat — Nhắn tin trực tuyến',
+    description: 'Hệ thống chăm sóc khách hàng',
+  },
 }
 
 export const viewport: Viewport = {

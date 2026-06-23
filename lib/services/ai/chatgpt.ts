@@ -25,9 +25,9 @@ export interface PromptContext {
   messages: { senderId: number; createDate: number; message: string }[];
 }
 
-/** Mirror PrepareDifyPrompt: context + 8 tin gần nhất + hướng dẫn. */
+/** Context + 12 tin gần nhất + (tuỳ chọn) định hướng của shop owner. */
 export function prepareDifyPrompt(ctx: PromptContext, input: string): string {
-  const recent = ctx.messages.slice(-8);
+  const recent = ctx.messages.slice(-12);
 
   let prompt = "<conversation>\n";
   prompt += `Shop Name: ${ctx.shopName}\n`;
@@ -46,7 +46,7 @@ export function prepareDifyPrompt(ctx: PromptContext, input: string): string {
   prompt += "</conversation>\n\n";
 
   // Chỉ chở hội thoại + định hướng của shop owner. Mọi chỉ dẫn (task, rules,
-  // output format, tag, sample) đã nằm trong systemInstruction nên không lặp lại
+  // output format, tag) đã nằm trong systemInstruction nên không lặp lại
   // ở đây để tránh trùng token trong cùng một request Gemini.
   if (input) {
     prompt += `Shop owner's guidance for this reply: "${input}"\n\n`;
@@ -56,19 +56,29 @@ export function prepareDifyPrompt(ctx: PromptContext, input: string): string {
   return prompt;
 }
 
-/** Mirror buildGeminiSystemInstruction: giữ nguyên văn prompt + sample responses. */
+/** System instruction tối ưu: 3 phương án theo hướng tiếp cận (không ép tông) + chống bịa + tag. */
 export function buildGeminiSystemInstruction(input: string): string {
-  let sb = `You are an expert Etsy customer support specialist. Your job is to:
-1. Generate 3 different response options for the shop owner to choose from
-2. Classify the conversation into the most appropriate tag based on the customer's issue
+  let sb = `You are an expert customer-support agent working INSIDE an Etsy shop, replying to a customer on the shop's behalf. Your job is to:
+1. Draft 3 genuinely useful, ready-to-send reply options for the staff to pick from
+2. Classify the conversation into the most appropriate tag
 
-## YOUR TASK:
-Generate exactly 3 response messages AND classify the conversation tag in JSON format:
-1. "agree" - Positive, agreeing with customer, accommodating their request
-2. "neutral" - Professional, balanced, neither committing nor refusing
-3. "apologize" - Empathetic, apologetic tone, acknowledging issues
-4. "suggested_tag" - The most appropriate tag for this conversation
-5. "tag_reason" - Brief explanation why this tag was chosen
+## YOUR TASK — THE 3 REPLY OPTIONS:
+Produce exactly 3 DISTINCT reply options. Each option is a COMPLETE message that fully resolves or advances the customer's MOST RECENT request — not three rewordings of the same sentence.
+- Make the options differ by APPROACH / SOLUTION / STRATEGY, NOT merely by tone. Examples of different approaches: propose a concrete solution; ask for the specific info you still need to help; offer a choice between options; reassure + commit to follow up; partial answer now + next step.
+- Pick the approaches that actually fit THIS situation. A simple thank-you may only warrant short variations; a complex problem (lost package, wrong design, refund, address change, production timeline) needs substantively different paths.
+- Each "text" must be a plain, complete message ready to paste and send: no markdown, no headings, no labels or quotes around it, no placeholders like [name] unless the real value is known.
+- Each "label" is a SHORT Vietnamese phrase (≤5 words) telling the staff what that option does, e.g. "Hỏi thêm thông tin", "Đề xuất giải pháp", "Trấn an & hẹn cập nhật", "Đưa 2 lựa chọn". The label is metadata for staff — it must NOT appear inside "text".
+
+## ⚠️ NEVER INVENT FACTS (most important rule):
+You ONLY know what is written in the conversation below. You do NOT have access to the order database, tracking, shipping dates, prices, product/design details, or shop policy specifics.
+- NEVER fabricate order numbers, tracking numbers, ship/delivery dates, refund amounts, prices, or policy terms.
+- If a good answer needs information you don't have, the reply must instead: (a) acknowledge the issue, then (b) either politely ask the customer for the specific detail needed (e.g. order number, photo), OR tell them the shop will check and follow up shortly. This is far more useful than a confident but wrong reply.
+- It is OK for the 3 options to take different stances on missing info (one asks the customer, one promises to check internally, etc.).
+
+## LANGUAGE & STYLE:
+1. Write every "text" in the SAME LANGUAGE as the customer's most recent message.
+2. Mirror the SHOP's own voice from this thread — formality, length, warmth, emoji use, greetings/sign-offs. Match how the shop already talks to this customer; do not impose a different style. If the shop hasn't replied yet, keep it warm, concise, and professional.
+3. Keep replies focused and human; avoid corporate filler and over-apologizing.
 
 ## TAG CLASSIFICATION RULES:
 These tags are ONLY for specific issues. Most conversations should have NO tag (empty string).
@@ -101,46 +111,39 @@ DO NOT TAG these normal conversations:
 
 If the CURRENT state of conversation doesn't clearly fit any tag above, use "suggested_tag": "" (empty string).
 
-## CRITICAL RULES:
-1. ALWAYS respond in the SAME LANGUAGE as the customer's most recent message
-2. MATCH the shop's own writing style and tone from how the shop has been replying in this conversation (formality, length, warmth, emoji use, greetings/sign-offs). Mirror the way the shop already talks to this customer — do NOT impose a different style.
-3. Each response should be DIFFERENT in tone but address the same issue
-4. If shop owner provides guidance, incorporate it into all 3 responses appropriately
-5. For tag classification, analyze ALL messages in the conversation, not just the last one
+For tag classification, analyze ALL messages in the conversation, not just the last one.
 
-## RESPONSE FORMAT (JSON only - ALL FIELDS REQUIRED):
+## RESPONSE FORMAT (JSON only — ALL FIELDS REQUIRED):
 {
-  "agree": "positive response here",
-  "neutral": "balanced response here",
-  "apologize": "apologetic response here",
+  "options": [
+    { "label": "Vietnamese label", "text": "complete reply in the customer's language" },
+    { "label": "Vietnamese label", "text": "complete reply in the customer's language" },
+    { "label": "Vietnamese label", "text": "complete reply in the customer's language" }
+  ],
   "suggested_tag": "one_of_the_tags_above_or_empty_string",
-  "tag_reason": "brief reason for tag selection or empty if no tag"
+  "tag_reason": "brief reason for tag selection, or empty if no tag"
 }
 
-⚠️ CRITICAL REQUIREMENTS:
-1. ALL 5 fields are MANDATORY - never omit any field
-2. The fields "agree", "neutral", and "apologize" MUST contain actual message text - NEVER leave them empty ("")
-3. Each of these 3 messages must be UNIQUE and have DIFFERENT tones
-4. If no tag applies, ONLY suggested_tag and tag_reason can be empty strings
-5. If you return empty strings for agree/neutral/apologize, the response will be rejected
+⚠️ HARD REQUIREMENTS:
+1. "options" MUST contain exactly 3 items; every "label" and "text" must be non-empty real content.
+2. The 3 "text" values must be meaningfully DIFFERENT in approach, not just reworded.
+3. Never invent facts you don't have (see the NEVER INVENT FACTS rule).
+4. If no tag applies, only "suggested_tag" and "tag_reason" may be empty strings.
 
 `;
 
   if (input) {
-    sb += `\n## ⚠️ CRITICAL: SHOP OWNER'S SPECIFIC INSTRUCTION FOR THIS RESPONSE:\n"${input}"\n\n`;
-    sb += "MANDATORY REQUIREMENT: The shop owner has provided a SPECIFIC message/question to send to the customer.\n";
-    sb += "You MUST use this exact message as the BASE for all 3 response options.\n";
-    sb += "All 3 responses must incorporate this guidance directly while varying only in tone:\n";
-    sb += "- agree: Use the shop owner's message with a friendly, accommodating tone\n";
-    sb += "- neutral: Use the shop owner's message with a professional, balanced tone\n";
-    sb += "- apologize: Use the shop owner's message with an apologetic, empathetic tone\n";
-    sb += "DO NOT ignore or significantly change the shop owner's message - it is the PRIMARY instruction.\n\n";
+    sb += `\n## SHOP OWNER'S GUIDANCE FOR THIS REPLY:\n"${input}"\n\n`;
+    sb += "The shop owner has given the intent/content they want to convey to the customer.\n";
+    sb += "All 3 options MUST deliver this intent faithfully — do not ignore or contradict it.\n";
+    sb += "Vary the options by HOW they deliver it (e.g. direct, with a question, with a reassurance + next step), not by changing what the shop owner wants to say.\n";
+    sb += "Still obey the NEVER INVENT FACTS rule: if the guidance assumes a detail not in the conversation, phrase it without fabricating specifics.\n\n";
   }
 
   return sb;
 }
 
-/** Mirror CallGeminiAPI: gemini-3.5-flash (thinking tắt), JSON output. */
+/** CallGeminiAPI: gemini-3.5-flash (thinking tắt), JSON output có responseSchema khoá cứng. */
 export async function callGeminiAPI(prompt: string, input: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY chưa cấu hình");
@@ -155,6 +158,26 @@ export async function callGeminiAPI(prompt: string, input: string): Promise<stri
       topP: 0.95,
       topK: 40,
       responseMimeType: "application/json",
+      // Ép đúng cấu trúc options[{label,text}] + tag để hết lỗi thiếu field / JSON hỏng.
+      responseSchema: {
+        type: "object",
+        properties: {
+          options: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                label: { type: "string" },
+                text: { type: "string" },
+              },
+              required: ["label", "text"],
+            },
+          },
+          suggested_tag: { type: "string" },
+          tag_reason: { type: "string" },
+        },
+        required: ["options", "suggested_tag", "tag_reason"],
+      },
       // Tắt thinking để phản hồi nhanh & rẻ hơn (chỉ sinh gợi ý ngắn).
       thinkingConfig: { thinkingBudget: 0 },
     },
@@ -230,35 +253,55 @@ export async function callDifyAPI(prompt: string, input: string): Promise<string
   return data.answer;
 }
 
-/** Mirror ProcessAIResponse: parse 3 đáp án + tag; fallback nếu thiếu field. */
+/** Parse options[] + tag. Fallback: schema cũ (agree/neutral/apologize), rồi text thô. */
 export function processAIResponse(raw: string): AIResponse {
   try {
     const r = JSON.parse(raw) as {
+      options?: { label?: unknown; text?: unknown }[];
+      // Tương thích ngược với phản hồi schema cũ (nếu còn).
       agree?: string;
       neutral?: string;
       apologize?: string;
       suggested_tag?: string;
       tag_reason?: string;
     };
-    if (r.agree && r.neutral && r.apologize) {
-      return {
-        solutions: [],
-        message: r.neutral,
-        agree: r.agree,
-        neutral: r.neutral,
-        apologize: r.apologize,
-        suggested_tag: r.suggested_tag ?? "",
-        tag_reason: r.tag_reason ?? "",
-      };
+
+    if (Array.isArray(r.options)) {
+      const options = r.options
+        .map((o) => ({
+          label: typeof o?.label === "string" ? o.label.trim() : "",
+          text: typeof o?.text === "string" ? o.text.trim() : "",
+        }))
+        .filter((o) => o.text);
+      if (options.length > 0) {
+        return {
+          options,
+          suggested_tag: r.suggested_tag ?? "",
+          tag_reason: r.tag_reason ?? "",
+        };
+      }
+    }
+
+    // Fallback schema cũ.
+    if (r.agree || r.neutral || r.apologize) {
+      const legacy = [
+        { label: "Đồng ý", text: r.agree ?? "" },
+        { label: "Trung lập", text: r.neutral ?? "" },
+        { label: "Xin lỗi", text: r.apologize ?? "" },
+      ].filter((o) => o.text);
+      if (legacy.length > 0) {
+        return {
+          options: legacy,
+          suggested_tag: r.suggested_tag ?? "",
+          tag_reason: r.tag_reason ?? "",
+        };
+      }
     }
   } catch {
-    /* fall through tới fallback */
+    /* fall through tới fallback text thô */
   }
-  return {
-    solutions: [],
-    message: raw,
-    agree: raw,
-    neutral: raw,
-    apologize: raw,
-  };
+
+  // Không parse được JSON → dùng nguyên văn làm 1 gợi ý.
+  const text = raw.trim();
+  return { options: text ? [{ label: "Gợi ý", text }] : [] };
 }

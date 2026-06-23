@@ -30,16 +30,20 @@ export interface ConversationDoc {
   updated_at: Date;
 }
 
+/** 1 phương án trả lời do AI sinh — label (cho nhân viên chọn) + text (gửi cho khách). */
+export interface AISuggestionOption {
+  /** Nhãn ngắn mô tả hướng tiếp cận của đáp án (tiếng Việt, cho nhân viên). */
+  label: string;
+  /** Nội dung tin nhắn hoàn chỉnh, sẵn sàng gửi (đúng ngôn ngữ của khách). */
+  text: string;
+}
+
 /**
- * Kết quả gợi ý AI cho 1 hội thoại — mirror utils.AIResponse của DORA (chatgpt.go).
- * 3 đáp án khác tông + tag phân loại.
+ * Kết quả gợi ý AI cho 1 hội thoại.
+ * 3 phương án trả lời (hướng tiếp cận khác nhau, không ép tông cứng) + tag phân loại.
  */
 export interface AIResponse {
-  solutions: string[];
-  message: string;
-  agree: string;
-  neutral: string;
-  apologize: string;
+  options: AISuggestionOption[];
   suggested_tag?: string;
   tag_reason?: string;
 }
