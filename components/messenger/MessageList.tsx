@@ -67,11 +67,13 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
 const Bubble = memo(function Bubble({
   m,
   onOpenImage,
+  onImageLoad,
   buyerName,
   buyerAvatar,
 }: {
   m: MessageItem;
   onOpenImage: (src: string) => void;
+  onImageLoad: (img: HTMLImageElement) => void;
   buyerName: string;
   buyerAvatar: string;
 }) {
@@ -116,6 +118,7 @@ const Bubble = memo(function Bubble({
               alt=""
               className="max-h-60 max-w-xs cursor-zoom-in rounded-2xl object-cover shadow-sm transition hover:opacity-90"
               onClick={() => onOpenImage(src)}
+              onLoad={(e) => onImageLoad(e.currentTarget)}
             />
           ))}
         </div>
@@ -207,6 +210,15 @@ export function MessageList({
     estimateSize: () => 60,
     overscan: 10,
   });
+
+  // Ảnh tải xong → bubble cao lên. Đo lại đúng chiều cao để các tin không bị đè lên nhau.
+  const remeasureFromImage = useCallback(
+    (img: HTMLImageElement) => {
+      const node = img.closest<HTMLElement>("[data-index]");
+      if (node) virtualizer.measureElement(node);
+    },
+    [virtualizer],
+  );
 
   // Reset khi đổi conversation.
   useEffect(() => {
@@ -308,6 +320,7 @@ export function MessageList({
                     <Bubble
                       m={m}
                       onOpenImage={openImage}
+                      onImageLoad={remeasureFromImage}
                       buyerName={name}
                       buyerAvatar={avatar}
                     />
