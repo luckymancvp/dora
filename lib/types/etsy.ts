@@ -253,6 +253,135 @@ export interface ConversationDetailResponse {
   receiptHistory: ReceiptHistoryItem[];
 }
 
+// ---- Orders (collection dora-master.etsy_orders) ----
+
+/**
+ * Collection `dora-master.etsy_orders` — 1 doc / 1 đơn Etsy.
+ * Mirror dora-backend/models/etsy_order.go: `data` là raw order (đã enrich
+ * `buyer` + `order_state_name`); key upsert là data.order_id.
+ */
+export interface EtsyOrderDoc {
+  _id?: ObjectId;
+  data: EtsyRaw;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/** Tab trên trang Orders (mirror Etsy: New / Completed). */
+export type OrderTab = "New" | "Completed";
+
+/** 1 dòng sản phẩm trong đơn (data.transactions[]). */
+export interface OrderTransaction {
+  transactionId: number;
+  listingId: number;
+  title: string;
+  /** Ảnh sản phẩm (product.image_url_75x75). */
+  image: string;
+  quantity: number;
+  /** Các variation thường (Size/Color/Style…), KHÔNG gồm Personalization. */
+  variations: { property: string; value: string }[];
+  /** Nội dung Personalization của khách (giữ xuống dòng để render multi-line). */
+  personalization: string;
+  /** Ảnh khách upload ("Your Photo") — enrich từ personalization_files theo transaction_id. */
+  personalizationFiles: PersonalizationFile[];
+}
+
+/** 1 mã tracking của 1 shipment (1 đơn có thể có NHIỀU shipment/tracking). */
+export interface TrackingEntry {
+  tracking_code: string;
+  carrier_name: string;
+  tracking_url: string;
+  is_shipped: boolean;
+  is_delivered: boolean;
+}
+
+/**
+ * Document collection `dora-master.order_tracking` — 1 doc / 1 đơn, NHIỀU tracking.
+ * Lưu tracking thật mà extension GET qua /shipments/by-order khi fetch đơn — vì
+ * payload list order của Etsy KHÔNG nhúng số tracking. Mỗi đơn có thể nhiều shipment.
+ */
+export interface OrderTrackingDoc {
+  _id?: ObjectId;
+  order_id: number;
+  trackings: TrackingEntry[];
+  updated_at: Date;
+}
+
+/** 1 tracking đã resolve cho frontend. */
+export interface OrderTracking {
+  code: string;
+  carrier: string;
+  url: string;
+  isDelivered: boolean;
+}
+
+/** Trạng thái giao của đơn (từ data.fulfillment, không cần fetch thêm). */
+export interface OrderShipping {
+  /** Tóm tắt tracking_status của Etsy: "Delivered" / "In transit"… ("" nếu chưa ship). */
+  statusSummary: string;
+  wasShipped: boolean;
+  /** unix giây ship thật (0 nếu chưa). */
+  shipDate: number;
+}
+
+/** Địa chỉ giao hàng (data.fulfillment.to_address). */
+export interface OrderAddress {
+  name: string;
+  line1: string;
+  line2: string;
+  city: string;
+  state: string;
+  zip: string;
+  country: string;
+}
+
+/** 1 đơn hàng trên trang Orders (DTO gọn cho frontend). */
+export interface OrderListItem {
+  id: string;
+  orderId: number;
+  /** unix giây (data.order_date) — dùng group theo ngày + format. */
+  orderDate: number;
+  /** Tên shop đã resolve (có thể rỗng nếu không xác định được). */
+  shopName: string;
+  /** Trạng thái thô từ Etsy (data.order_state_name) — hiển thị pill. */
+  stateName: string;
+  tab: OrderTab;
+  buyerName: string;
+  /** Tổng tiền đã format (vd "AU$35.39"). */
+  total: string;
+  /** Mã/coupon đã áp (rỗng nếu không có). */
+  coupon: string;
+  /** unix giây dự kiến dispatch (0 nếu không có). */
+  dispatchBy: number;
+  /** Phương thức giao (vd "Standard Delivery"). */
+  shippingMethod: string;
+  /** Trạng thái giao từ data order (Delivered/Shipped + ngày). */
+  shipping: OrderShipping;
+  /** Danh sách tracking thật (1 đơn có thể nhiều mã); rỗng nếu chưa GET. */
+  trackings: OrderTracking[];
+  toAddress: OrderAddress;
+  transactions: OrderTransaction[];
+}
+
+/** Bộ lọc danh sách đơn. */
+export interface OrderFilters {
+  search: string;
+  shopName: string;
+  tab: OrderTab;
+  page: number;
+}
+
+/** Phản hồi GET /api/orders (phân trang offset/page). */
+export interface OrdersResponse {
+  items: OrderListItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  /** Số đơn theo từng tab (tính trên cùng filter search/shop) để hiện badge. */
+  tabCounts: { New: number; Completed: number };
+}
+
 /** Tin nhắn đang gửi (chưa được Etsy xác nhận) — hiển thị tách khỏi list đã fetch. */
 export interface PendingMessage {
   localId: string;

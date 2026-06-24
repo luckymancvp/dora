@@ -1,4 +1,4 @@
-import { getConversationsCollection, getStoresCollection } from "@/lib/db/collections";
+import { getConversationsCollection, getStoresCollection, type StoreDoc } from "@/lib/db/collections";
 import { getOnlineShopNames } from "@/lib/services/ably-publish";
 import { asNumber, firstString } from "@/lib/services/etsy-utils";
 
@@ -22,6 +22,32 @@ export async function resolveShopIdByName(shopName: string): Promise<number | nu
     console.warn("[resolveShopIdByName] failed:", (e as Error)?.message);
     return null;
   }
+}
+
+/**
+ * Map shop_id → shop_name từ dora-master.stores (dựng 1 lần để resolve shop
+ * của đơn không cần query từng doc). Bỏ qua store thiếu shop_id/shop_name.
+ */
+export async function getShopIdNameMap(): Promise<Map<number, string>> {
+  const map = new Map<number, string>();
+  try {
+    const coll = await getStoresCollection();
+    const docs = await coll
+      .find({ type: "Etsy" } as Parameters<typeof coll.find>[0])
+      .project({ "data.context.data.current_shop": 1 })
+      .toArray();
+    for (const d of docs) {
+      const shop = (d as StoreDoc).data?.context?.data?.current_shop;
+      const id = shop?.shop_id;
+      const name = shop?.shop_name;
+      if (typeof id === "number" && id > 0 && typeof name === "string" && name) {
+        map.set(id, name);
+      }
+    }
+  } catch (e) {
+    console.warn("[getShopIdNameMap] failed:", (e as Error)?.message);
+  }
+  return map;
 }
 
 export interface ShopItem {

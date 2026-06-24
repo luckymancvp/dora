@@ -12,6 +12,7 @@ import {
   MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
+  ShoppingBag,
   Truck,
 } from "lucide-react"
 import { signOut, useSession } from "next-auth/react"
@@ -41,6 +42,7 @@ export function MobileMenuButton({ className }: { className?: string }) {
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/messages", label: "Messenger", icon: MessageCircle },
+  { href: "/orders", label: "Orders", icon: ShoppingBag },
   { href: "/tracking", label: "Tracking", icon: Truck },
 ]
 

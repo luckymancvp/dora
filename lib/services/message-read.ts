@@ -13,6 +13,7 @@ import type {
 import {
   asNumber,
   asString,
+  brToNewline,
   decodeHtmlEntities,
   firstNumber,
   firstString,
@@ -63,6 +64,13 @@ const CONV_HEADER_PROJECTION = {
   "user_data.shop_name": 1,
   "user_data.shop_avatar_url": 1,
   "user_data.avatar_url": 1,
+  // Fallback khi hội thoại chỉ được sync qua detail (chưa có user_data top-level):
+  // shop nằm trong etsy.user_data. Thiếu nó → shopUserId=0 → tin của shop bị hiểu
+  // nhầm là của khách (fromMe=false).
+  "etsy.user_data.user_id": 1,
+  "etsy.user_data.shop_name": 1,
+  "etsy.user_data.shop_avatar_url": 1,
+  "etsy.user_data.avatar_url": 1,
 } as const;
 
 function mapMessage(
@@ -103,7 +111,7 @@ function mapMessage(
   const senderAvatar = user?.image ?? "";
   return {
     id: String(etsy["conversation_message_id"] ?? doc._id.toHexString()),
-    message: decodeHtmlEntities(asString(etsy["message"])),
+    message: brToNewline(decodeHtmlEntities(asString(etsy["message"]))),
     senderId,
     fromMe,
     createDate: asNumber(etsy["create_date"]) ?? 0,
@@ -130,10 +138,19 @@ export async function getConversationMessages(opts: {
     { projection: CONV_HEADER_PROJECTION },
   )) as WithId<ConversationDoc> | null;
 
-  const shopUserId = conv ? firstNumber(conv, ["user_data.user_id"]) ?? 0 : 0;
+  const shopUserId = conv
+    ? firstNumber(conv, ["user_data.user_id", "etsy.user_data.user_id"]) ?? 0
+    : 0;
   const shop = {
-    name: conv ? firstString(conv, ["user_data.shop_name"]) : "",
-    avatar: conv ? firstString(conv, ["user_data.shop_avatar_url", "user_data.avatar_url"]) : "",
+    name: conv ? firstString(conv, ["user_data.shop_name", "etsy.user_data.shop_name"]) : "",
+    avatar: conv
+      ? firstString(conv, [
+          "user_data.shop_avatar_url",
+          "user_data.avatar_url",
+          "etsy.user_data.shop_avatar_url",
+          "etsy.user_data.avatar_url",
+        ])
+      : "",
   };
   const name = conv
     ? decodeHtmlEntities(

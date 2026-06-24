@@ -26,6 +26,12 @@ export const SEND_TRACKING_EVENT = "send-tracking";
 // Event yêu cầu extension GET lại ảnh khách upload ("Your Photo").
 export const FETCH_PERSONALIZATION_EVENT = "fetch-personalization";
 
+// Event trigger extension sync đơn từ Etsy về (channel = shop_name).
+export const FETCH_ORDERS_EVENT = "fetch-orders";
+
+// Event nhắn khách theo đơn (extension tự tạo hội thoại mới nếu chưa có).
+export const SEND_ORDER_MESSAGE_EVENT = "send-order-message";
+
 /**
  * Chọn 1 browser extension đang online trên channel của shop (presence) —
  * lấy client cuối để đảm bảo chỉ 1 client xử lý. Trả null nếu không có ai online.
@@ -140,6 +146,49 @@ export async function publishFetchPersonalization(
   if (!targetClientId) return null;
 
   await channel.publish(FETCH_PERSONALIZATION_EVENT, { ...data, clientId: targetClientId });
+  return targetClientId;
+}
+
+/**
+ * Trigger extension sync đơn từ Etsy về (event "fetch-orders", channel = shop_name).
+ * Extension nhận {date_from, date_to} (ISO date), fetch rồi POST về backend → etsy_orders.
+ * KHÔNG báo kết quả về app này → fire-and-forget; frontend tự refetch sau.
+ * Trả clientId được nhắm tới, hoặc null nếu shop không có browser online.
+ */
+export async function publishFetchOrders(
+  shopName: string,
+  data: { date_from?: string; date_to?: string },
+): Promise<string | null> {
+  const rest = getRest();
+  if (!rest || !shopName) return null;
+  const channel = rest.channels.get(shopName);
+
+  const targetClientId = await pickTargetClient(channel);
+  if (!targetClientId) return null;
+
+  // Extension handler "fetch-orders" KHÔNG lọc theo clientId; vẫn gửi để biết shop online.
+  await channel.publish(FETCH_ORDERS_EVENT, data);
+  return targetClientId;
+}
+
+/**
+ * Nhắn khách theo đơn (event "send-order-message", channel = shop_name).
+ * Extension getOrderConvo → gửi vào hội thoại cũ, hoặc tạo hội thoại mới + gửi tin đầu.
+ * Trạng thái báo về Go backend (KHÔNG về app này) → fire-and-forget.
+ * Trả clientId được nhắm tới, hoặc null nếu shop không có browser online.
+ */
+export async function publishSendOrderMessage(
+  shopName: string,
+  data: { id: string; order_id: string; message: string },
+): Promise<string | null> {
+  const rest = getRest();
+  if (!rest || !shopName) return null;
+  const channel = rest.channels.get(shopName);
+
+  const targetClientId = await pickTargetClient(channel);
+  if (!targetClientId) return null;
+
+  await channel.publish(SEND_ORDER_MESSAGE_EVENT, { ...data, clientId: targetClientId });
   return targetClientId;
 }
 

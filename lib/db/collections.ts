@@ -1,6 +1,6 @@
 import type { Collection, Db } from "mongodb";
 import clientPromise from "@/lib/mongodb-client";
-import type { AutoReplyDoc, ConversationDoc, MessageDoc, MessageTemplateDoc, PersonalizationFileDoc } from "@/lib/types/etsy";
+import type { AutoReplyDoc, ConversationDoc, EtsyOrderDoc, MessageDoc, MessageTemplateDoc, OrderTrackingDoc, PersonalizationFileDoc } from "@/lib/types/etsy";
 import type { SheetConfigDoc, SheetRowDoc } from "@/lib/types/sheets";
 import type { OrderStatusDoc } from "@/lib/types/order-status";
 import type { TrackingJob } from "@/lib/types/tracking";
@@ -98,4 +98,23 @@ export async function getTrackingJobsCollection(): Promise<Collection<TrackingJo
 export async function getStoresCollection(): Promise<Collection<StoreDoc>> {
   const client = await clientPromise;
   return client.db(STORES_DB_NAME).collection<StoreDoc>("stores");
+}
+
+/**
+ * Collection đơn hàng Etsy (DB dora-master, ghi bởi extension → dora-backend).
+ * Bỏ qua getDb() (meta_local) vì collection nằm ở DB khác.
+ */
+export async function getEtsyOrdersCollection(): Promise<Collection<EtsyOrderDoc>> {
+  const client = await clientPromise;
+  return client.db(STORES_DB_NAME).collection<EtsyOrderDoc>("etsy_orders");
+}
+
+/**
+ * Collection tracking thật theo đơn (DB dora-master, cạnh etsy_orders).
+ * Ghi bởi extension qua /v1/extension/orders/tracking-sync; trang Orders đọc để
+ * hiện số tracking (payload list order của Etsy không nhúng số tracking).
+ */
+export async function getOrderTrackingCollection(): Promise<Collection<OrderTrackingDoc>> {
+  const client = await clientPromise;
+  return client.db(STORES_DB_NAME).collection<OrderTrackingDoc>("order_tracking");
 }

@@ -27,6 +27,16 @@ export function decodeHtmlEntities(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
+/**
+ * Chuyển thẻ <br> / <br/> / <br /> (Etsy/template chèn) thành 1 newline, nuốt luôn
+ * newline thật theo sau để tránh nhân đôi dòng. Render text thuần (whitespace-pre-line)
+ * sẽ xuống dòng đúng thay vì hiện "<br />".
+ */
+export function brToNewline(s: string): string {
+  if (!s) return s;
+  return s.replace(/<br\s*\/?>\r?\n?/gi, "\n");
+}
+
 export function isObject(v: unknown): v is EtsyRaw {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }

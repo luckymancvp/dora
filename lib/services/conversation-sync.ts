@@ -117,6 +117,9 @@ export async function mergeAndSyncConversation(
   let shopId: number | undefined;
   const ud = body["user_data"];
   if (isObject(ud)) shopId = asNumber(ud["user_id"]);
+  // Lấy user_data top-level từ existing nếu detail không kèm (giữ shop cho hội thoại
+  // chỉ sync qua detail — nếu thiếu, tin của shop bị hiểu nhầm là của khách).
+  const userData = isObject(ud) ? ud : existing?.user_data ?? null;
 
   // has_replied: mặc định false (an toàn), chỉ true khi message cuối là reply thật từ shop.
   let hasReplied = false;
@@ -132,7 +135,7 @@ export async function mergeAndSyncConversation(
   await coll.updateOne(
     filter,
     {
-      $set: { etsy: mergedEtsy, updated_at: now, lastMessageDate },
+      $set: { etsy: mergedEtsy, user_data: userData, updated_at: now, lastMessageDate },
       $setOnInsert: { created_at: now, tags: [] as string[], note: "" },
     },
     { upsert: true },
