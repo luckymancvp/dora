@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2, RefreshCw, Search, ShoppingBag } from "lucide-react";
 import { useShops } from "@/lib/hooks/useShops";
 import { useOrders } from "@/lib/hooks/useOrders";
@@ -32,6 +32,16 @@ export default function OrdersPage() {
 
   const items = data?.items ?? [];
 
+  // Khi đang search mà tab hiện tại không có kết quả nhưng tab kia có,
+  // tự chuyển sang tab kia (tabCounts đã tính theo search) để khỏi phải bấm tay.
+  useEffect(() => {
+    if (!filters.search.trim() || isLoading || isFetching || !data) return;
+    if (items.length > 0) return;
+    const other: OrderTab = filters.tab === "New" ? "Completed" : "New";
+    if ((data.tabCounts[other] ?? 0) > 0) patch({ tab: other });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.search, filters.tab, data, isLoading, isFetching, items.length]);
+
   return (
     <div className="h-full overflow-y-auto">
     <div className="mx-auto max-w-5xl px-6 py-8">
@@ -50,6 +60,17 @@ export default function OrdersPage() {
           </button>
           <FetchOrdersButton shops={shops ?? []} onFetched={() => refetch()} />
         </div>
+      </div>
+
+      {/* Search */}
+      <div className="relative mb-4">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          value={filters.search}
+          onChange={(e) => patch({ search: e.target.value })}
+          placeholder="Tìm theo order ID, tên khách…"
+          className="w-full rounded-xl border-0 bg-secondary py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
       </div>
 
       {/* Tabs */}
@@ -71,18 +92,8 @@ export default function OrdersPage() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-[1fr_16rem]">
-        {/* Cột trái: search + list + pagination */}
+        {/* Cột trái: list + pagination */}
         <div className="space-y-4">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={filters.search}
-              onChange={(e) => patch({ search: e.target.value })}
-              placeholder="Tìm theo order ID, tên khách…"
-              className="w-full rounded-xl border-0 bg-secondary py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-
           {isLoading ? (
             <div className="flex items-center gap-2 rounded-xl bg-secondary px-4 py-3 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Đang tải đơn…

@@ -52,6 +52,10 @@ export function MessageList({
     getScrollElement: () => parentRef.current,
     estimateSize: () => 60,
     overscan: 10,
+    // Cache chiều cao theo id ổn định, KHÔNG theo index. Khi cuộn lên load tin cũ
+    // (prepend vào đầu mảng) index của mọi tin bị dịch — nếu cache theo index thì
+    // chiều cao đã đo nằm sai chỗ → các bong bóng đè lên nhau (phải reload mới hết).
+    getItemKey: (index) => items[index]?.id ?? index,
   });
 
   // Ảnh tải xong → bubble cao lên. Đo lại đúng chiều cao để các tin không bị đè lên nhau.
