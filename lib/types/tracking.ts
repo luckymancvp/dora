@@ -94,6 +94,12 @@ function norm(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+/** Tên carrier để hiển thị: known id → tên chuẩn; -1 → other_carrier (nếu có). */
+export function carrierLabel(carrier: number, other_carrier: string): string {
+  if (carrier === -1) return other_carrier.trim();
+  return CARRIERS.find((c) => c.id === carrier)?.name ?? other_carrier.trim();
+}
+
 /**
  * Map tên carrier người dùng nhập sang { carrier, other_carrier }.
  * Khớp tên/alias known → carrier id, other_carrier rỗng.

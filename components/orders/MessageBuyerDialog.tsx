@@ -98,7 +98,7 @@ export function MessageBuyerDialog({
       onClick={onClose}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl border border-border bg-background p-5 shadow-lg"
+        className="flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-border bg-background p-5 shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-3 flex items-start justify-between">
@@ -129,7 +129,7 @@ export function MessageBuyerDialog({
         </div>
 
         {/* Hội thoại hiện có — hiển thị y hệt trang Messenger */}
-        <div className="mb-3 min-h-[6rem] flex-1 overflow-y-auto rounded-xl bg-card py-3">
+        <div className="mb-3 min-h-0 flex-1 overflow-y-auto rounded-xl bg-card py-3">
           {loadingConvo ? (
             <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Đang tải hội thoại…
@@ -165,10 +165,10 @@ export function MessageBuyerDialog({
           onChange={(e) => setMessage(e.target.value)}
           rows={3}
           placeholder="Nội dung tin nhắn gửi khách…"
-          className="w-full resize-y rounded-xl border-0 bg-secondary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          className="w-full shrink-0 resize-y rounded-xl border-0 bg-secondary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         />
 
-        <div className="mt-3 flex justify-end gap-2">
+        <div className="mt-3 flex shrink-0 justify-end gap-2">
           <button
             onClick={onClose}
             className="rounded-full px-4 py-2 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground"

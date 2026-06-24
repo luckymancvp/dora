@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useShops } from "@/lib/hooks/useShops";
 import { MobileMenuButton } from "@/components/sidebar";
+import { carrierLabel } from "@/lib/types/tracking";
 
 type Precheck = "PENDING" | "CLEAR" | "EXISTS";
 type AddStatus = "NEW" | "SENDING" | "DONE" | "FAILED";
@@ -89,6 +90,15 @@ function parseRows(text: string): ParsedRow[] {
     .split("\n")
     .map(parseLine)
     .filter((r): r is ParsedRow => r !== null);
+}
+
+/** Các trường bắt buộc còn thiếu của 1 đơn (để cảnh báo đỏ & chặn tick chọn). */
+function missingFields(o: JobOrder): string[] {
+  const missing: string[] = [];
+  if (!o.order_id?.trim()) missing.push("Order ID");
+  if (!o.tracking_number?.trim()) missing.push("Tracking");
+  if (!carrierLabel(o.carrier, o.other_carrier).trim()) missing.push("Carrier");
+  return missing;
 }
 
 export default function TrackingPage() {
@@ -406,7 +416,8 @@ const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, 
   useEffect(() => {
     if (job.phase === "AWAIT_CONFIRM" && initializedSelection.current !== job.id) {
       const init: Record<string, boolean> = {};
-      for (const o of job.orders) init[o.order_id] = o.precheck === "CLEAR";
+      for (const o of job.orders)
+        init[o.order_id] = o.precheck === "CLEAR" && missingFields(o).length === 0;
       setSelected(init);
       initializedSelection.current = job.id;
     }
@@ -486,7 +497,7 @@ const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, 
       !q
         ? job.orders
         : job.orders.filter((o) =>
-            `${o.order_id} ${o.tracking_number} ${o.other_carrier} ${o.existing?.carrier_name ?? ""}`
+            `${o.order_id} ${o.tracking_number} ${carrierLabel(o.carrier, o.other_carrier)} ${o.existing?.carrier_name ?? ""}`
               .toLowerCase()
               .includes(q),
           ),
@@ -578,31 +589,58 @@ const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, 
               {job.phase === "AWAIT_CONFIRM" && <th className="w-10 px-3 py-2"></th>}
               <th className="px-3 py-2 text-left">Order ID</th>
               <th className="px-3 py-2 text-left">Tracking</th>
+              <th className="px-3 py-2 text-left">Carrier</th>
               <th className="px-3 py-2 text-left">Trạng thái</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {ordersFiltered.map((o) => (
-              <tr key={o.order_id}>
+            {ordersFiltered.map((o) => {
+              const missing = missingFields(o);
+              const incomplete = missing.length > 0;
+              const carrierText = carrierLabel(o.carrier, o.other_carrier);
+              return (
+              <tr key={o.order_id} className={incomplete ? "bg-destructive/10" : undefined}>
                 {job.phase === "AWAIT_CONFIRM" && (
                   <td className="px-3 py-2 align-top">
                     <input
                       type="checkbox"
-                      checked={!!selected[o.order_id]}
+                      checked={!incomplete && !!selected[o.order_id]}
+                      disabled={incomplete}
+                      title={incomplete ? `Thiếu ${missing.join(", ")} — không thể add` : undefined}
                       onChange={(e) =>
                         setSelected((p) => ({ ...p, [o.order_id]: e.target.checked }))
                       }
-                      className="h-4 w-4 accent-primary"
+                      className="h-4 w-4 accent-primary disabled:cursor-not-allowed disabled:opacity-40"
                     />
                   </td>
                 )}
-                <td className="px-3 py-2 font-mono align-top">{o.order_id}</td>
-                <td className="px-3 py-2 font-mono align-top">{o.tracking_number}</td>
+                <td className="px-3 py-2 font-mono align-top">
+                  {o.order_id || <span className="text-destructive">Thiếu Order ID</span>}
+                </td>
+                <td className="px-3 py-2 font-mono align-top">
+                  {o.tracking_number || <span className="text-destructive">Thiếu Tracking</span>}
+                </td>
                 <td className="px-3 py-2 align-top">
-                  <OrderStatusCell order={o} phase={job.phase} />
+                  {carrierText ? (
+                    carrierText
+                  ) : (
+                    <span className="inline-flex items-center gap-1 font-medium text-destructive">
+                      <AlertTriangle className="h-3.5 w-3.5" /> Thiếu Carrier
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-2 align-top">
+                  {incomplete ? (
+                    <span className="inline-flex items-center gap-1 text-destructive">
+                      <XCircle className="h-3.5 w-3.5" /> Thiếu {missing.join(", ")} — không thể add
+                    </span>
+                  ) : (
+                    <OrderStatusCell order={o} phase={job.phase} />
+                  )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

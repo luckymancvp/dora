@@ -1,7 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ExternalLink, MessageCircle, RotateCcw, Users, X } from "lucide-react";
+import {
+  ArrowDownWideNarrow,
+  ArrowUpNarrowWide,
+  Check,
+  ExternalLink,
+  MessageCircle,
+  RotateCcw,
+  Users,
+  X,
+} from "lucide-react";
 import {
   OPENED_KEY,
   readOpenedIds,
@@ -17,12 +26,16 @@ import {
 
 const BATCH_SIZES = [10, 20, 40];
 
+/** Thứ tự hiển thị/mở. "oldest" = cũ nhất trước (mặc định); "newest" = mới nhất trước. */
+type SortOrder = "oldest" | "newest";
+
 export default function OpenMultiplePage() {
   const [allEntries, setAllEntries] = useState<OpenEntry[]>([]);
   const [opened, setOpened] = useState<Set<number>>(new Set());
   const [people, setPeople] = useState(1);
   const [part, setPart] = useState(1);
   const [peopleInput, setPeopleInput] = useState("1"); // ô nhập "số người" (cho gõ tự do)
+  const [sort, setSort] = useState<SortOrder>("oldest"); // thứ tự hiển thị/mở
 
   // Nạp danh sách + đánh dấu; đồng bộ khi dashboard stage danh sách mới (storage event).
   useEffect(() => {
@@ -46,15 +59,22 @@ export default function OpenMultiplePage() {
 
   // Sắp xếp theo id cố định để mọi máy cắt ra cùng các phần (không trùng/sót),
   // rồi lấy đúng phần của mình. people=1 → giữ nguyên toàn bộ danh sách.
+  // LƯU Ý: việc CHIA luôn theo id tăng dần (canonical) để đảm bảo mọi máy ra cùng
+  // các phần; `sort` chỉ đổi thứ tự HIỂN THỊ/MỞ, không ảnh hưởng cách chia.
   const sorted = useMemo(
     () => [...allEntries].sort((a, b) => a.id - b.id),
     [allEntries],
   );
+  // Áp thứ tự hiển thị lên 1 phần (canonical là id tăng dần nên "newest" = đảo lại).
+  const display = useCallback(
+    (list: OpenEntry[]) => (sort === "newest" ? [...list].reverse() : list),
+    [sort],
+  );
   const groups = useMemo(() => splitEven(sorted, people), [sorted, people]);
   const safePart = Math.min(Math.max(1, part), people);
   const entries = useMemo(
-    () => (people <= 1 ? sorted : groups[safePart - 1] ?? []),
-    [people, sorted, groups, safePart],
+    () => display(people <= 1 ? sorted : groups[safePart - 1] ?? []),
+    [people, sorted, groups, safePart, display],
   );
 
   // Đổi cách chia: lưu lại để mở tab khác / reload vẫn giữ.
@@ -165,6 +185,34 @@ export default function OpenMultiplePage() {
           />
           <span className="text-sm text-muted-foreground">người</span>
 
+          {/* Thứ tự sắp xếp danh sách (mặc định: cũ nhất → mới nhất) */}
+          <div className="inline-flex items-center gap-2 rounded-full border border-border bg-background p-1">
+            <button
+              type="button"
+              onClick={() => setSort("oldest")}
+              className={`inline-flex items-center rounded-full p-1.5 transition-colors ${
+                sort === "oldest"
+                  ? "bg-primary text-white"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              title="Cũ nhất → mới nhất"
+            >
+              <ArrowUpNarrowWide className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setSort("newest")}
+              className={`inline-flex items-center rounded-full p-1.5 transition-colors ${
+                sort === "newest"
+                  ? "bg-primary text-white"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              title="Mới nhất → cũ nhất"
+            >
+              <ArrowDownWideNarrow className="h-4 w-4" />
+            </button>
+          </div>
+
           <button
             type="button"
             onClick={reset}
@@ -223,7 +271,8 @@ export default function OpenMultiplePage() {
           /* Nhiều người: lưới các ô, mỗi ô là phần của một người */
           <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {groups.map((g, i) => {
-              const gRemaining = g.filter((e) => !opened.has(e.id));
+              const gDisplay = display(g);
+              const gRemaining = gDisplay.filter((e) => !opened.has(e.id));
               const isMine = safePart === i + 1;
               return (
                 <div
@@ -274,7 +323,7 @@ export default function OpenMultiplePage() {
                     ))}
                   </div>
                   <ul className="max-h-72 divide-y divide-border overflow-y-auto">
-                    {g.map((e, idx) => (
+                    {gDisplay.map((e, idx) => (
                       <ConvRow
                         key={e.id}
                         e={e}
