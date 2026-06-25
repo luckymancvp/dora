@@ -95,17 +95,14 @@ export function OrderCard({
             <div className="min-w-0 text-sm">
               <p className="line-clamp-2 font-medium text-foreground">{t.title}</p>
               <p className="text-muted-foreground">Quantity {t.quantity}</p>
+              {t.personalization && (
+                <p className="mt-1 text-xs font-medium text-muted-foreground">Personalization</p>
+              )}
               {t.variations.map((v, i) => (
                 <p key={i} className="text-muted-foreground">
                   <span className="text-foreground">{v.property}</span> {v.value}
                 </p>
               ))}
-              {t.personalization && (
-                <div className="mt-1 rounded-lg bg-secondary px-2 py-1 text-foreground">
-                  <span className="text-xs font-medium text-muted-foreground">Personalization</span>
-                  <p className="whitespace-pre-line">{t.personalization}</p>
-                </div>
-              )}
               <PersonalizationPhotos t={t} />
             </div>
           </div>
