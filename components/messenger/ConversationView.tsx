@@ -12,7 +12,7 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { upload } from "@vercel/blob/client";
-import { Send, Info, StickyNote, Paperclip, X, Loader2, Sparkles, BookMarked, ArrowLeft } from "lucide-react";
+import { Send, Info, StickyNote, Paperclip, X, Loader2, Sparkles, BookMarked, ArrowLeft, ExternalLink } from "lucide-react";
 import { TemplatePicker } from "@/components/messenger/TemplatePicker";
 import { MessageList } from "@/components/messenger/MessageList";
 import { useSendMessage } from "@/lib/hooks/useSendMessage";
@@ -266,6 +266,22 @@ export function ConversationView({
             <span className="font-normal text-muted-foreground"> · {shopName}</span>
           )}
         </h2>
+        {/* Mã hội thoại + nút mở tab mới — gom cùng nhóm, căn giữa, sát nhau (không bị tên đẩy xa). */}
+        <div className="flex shrink-0 items-center gap-1 text-sm font-normal text-muted-foreground">
+          {name !== `#${conversationId}` && (
+            <span className="select-all whitespace-nowrap">· #{conversationId}</span>
+          )}
+          <a
+            href={`/messages/${conversationId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Mở tin nhắn ở tab mới"
+            aria-label="Mở tin nhắn ở tab mới"
+            className="inline-flex h-6 w-6 items-center justify-center rounded-full transition-colors hover:bg-secondary hover:text-foreground"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {onToggleNotes ? (
             <button

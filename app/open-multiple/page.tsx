@@ -10,6 +10,7 @@ import {
   LayoutGrid,
   MessageCircle,
   RotateCcw,
+  Store,
   Users,
   X,
 } from "lucide-react";
@@ -38,6 +39,7 @@ export default function OpenMultiplePage() {
   const [part, setPart] = useState(1);
   const [peopleInput, setPeopleInput] = useState("1"); // ô nhập "số người" (cho gõ tự do)
   const [sort, setSort] = useState<SortOrder>("oldest"); // thứ tự hiển thị/mở
+  const [shopFilter, setShopFilter] = useState(""); // "" = tất cả shop
 
   // Nạp danh sách + đánh dấu; đồng bộ khi dashboard stage danh sách mới (storage event).
   useEffect(() => {
@@ -65,12 +67,24 @@ export default function OpenMultiplePage() {
   // people=1 → giữ nguyên toàn bộ danh sách.
   // LƯU Ý: việc CHIA luôn theo canonical này để đảm bảo mọi máy ra cùng các phần;
   // `sort` chỉ đổi thứ tự HIỂN THỊ/MỞ, không ảnh hưởng cách chia.
+  // Danh sách shop có trong đợt mở (để dựng bộ lọc). Bỏ trống/không tên.
+  const shopOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of allEntries) if (e.shop) set.add(e.shop);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [allEntries]);
+
+  // Lọc theo shop trước, rồi mới sort/chia — để mỗi người chỉ xử lý 1 shop khi cần.
+  const filteredEntries = useMemo(
+    () => (shopFilter ? allEntries.filter((e) => e.shop === shopFilter) : allEntries),
+    [allEntries, shopFilter],
+  );
   const sorted = useMemo(
     () =>
-      [...allEntries].sort(
+      [...filteredEntries].sort(
         (a, b) => (a.ts ?? 0) - (b.ts ?? 0) || a.id - b.id,
       ),
-    [allEntries],
+    [filteredEntries],
   );
   // Áp thứ tự hiển thị lên 1 phần (canonical là cũ → mới nên "newest" = đảo lại).
   const display = useCallback(
@@ -201,6 +215,25 @@ export default function OpenMultiplePage() {
             className="w-24 rounded-xl border border-border bg-background px-3 py-2 text-sm font-bold text-foreground outline-none focus:border-primary"
           />
           <span className="text-sm text-muted-foreground">người</span>
+
+          {/* Lọc theo shop — để hội thoại các shop không bị lẫn lộn */}
+          {shopOptions.length > 0 && (
+            <label className="inline-flex items-center gap-2 text-sm font-bold text-foreground">
+              <Store className="h-4 w-4 text-primary" />
+              <select
+                value={shopFilter}
+                onChange={(ev) => setShopFilter(ev.target.value)}
+                className="rounded-xl border border-border bg-background px-3 py-2 text-sm font-bold text-foreground outline-none focus:border-primary"
+              >
+                <option value="">Tất cả shop ({shopOptions.length})</option>
+                {shopOptions.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           {/* Thứ tự sắp xếp danh sách (mặc định: cũ nhất → mới nhất) */}
           <div className="inline-flex items-center gap-2 rounded-full border border-border bg-background p-1">

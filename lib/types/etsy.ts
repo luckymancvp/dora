@@ -415,6 +415,8 @@ export interface UnreadConvItem {
   name: string;
   avatar: string;
   lastMessageDate: number;
+  /** Tên shop — để bảng "mở nhiều" phân biệt hội thoại của shop nào (nhất là khi gộp theo tag). */
+  shop?: string;
 }
 
 /** Tổng quan 3 thẻ (Total/Unread/Completed). */

@@ -125,17 +125,21 @@ async function fetchUnreadConversations(base: Filter<ConversationDoc>) {
   return docs.map(mapConversation);
 }
 
-function toUnreadItem(c: {
-  conversationId: number;
-  name: string;
-  avatar: string;
-  lastMessageDate: number;
-}): UnreadConvItem {
+function toUnreadItem(
+  c: {
+    conversationId: number;
+    name: string;
+    avatar: string;
+    lastMessageDate: number;
+  },
+  shop?: string,
+): UnreadConvItem {
   return {
     conversationId: c.conversationId,
     name: c.name,
     avatar: c.avatar,
     lastMessageDate: c.lastMessageDate,
+    ...(shop ? { shop } : {}),
   };
 }
 
@@ -323,9 +327,10 @@ export async function getTagsOverview(opts: AnalyticsOpts): Promise<TagsOverview
   const base = buildBaseMatch(opts);
   const coll = await getConversationsCollection();
 
-  const [totals, unreadConvs, taggedRows, untaggedRow] = await Promise.all([
+  const [totals, unreadConvs, shops, taggedRows, untaggedRow] = await Promise.all([
     computeTotals(base),
     fetchUnreadConversations(base),
+    getShops().catch(() => []),
     // Đếm total/unread theo từng tag.
     coll
       .aggregate<{ _id: string; total: number; unread: number }>([
@@ -361,11 +366,16 @@ export async function getTagsOverview(opts: AnalyticsOpts): Promise<TagsOverview
       .toArray(),
   ]);
 
+  // Map shopUserId → tên shop để gắn vào từng item (gộp theo tag nên cần biết shop nào).
+  const shopNameById = new Map(shops.map((s) => [s.userId, s.shopName]));
+
   // Bucket unread conversations theo tag + No Tag.
   const unreadByTag = new Map<string, UnreadConvItem[]>();
   const unreadNoTag: UnreadConvItem[] = [];
   for (const c of unreadConvs) {
-    const item = toUnreadItem(c);
+    const shopName =
+      shopNameById.get(c.shopUserId) || (c.shopUserId ? `Shop ${c.shopUserId}` : "");
+    const item = toUnreadItem(c, shopName);
     if (!c.tags || c.tags.length === 0) {
       if (unreadNoTag.length < UNREAD_PER_BUCKET) unreadNoTag.push(item);
       continue;
