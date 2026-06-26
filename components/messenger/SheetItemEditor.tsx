@@ -62,12 +62,61 @@ function CopyCode({ value, className }: { value: string; className?: string }) {
   );
 }
 
-/** Preview các link ảnh trong Customer Image — mỗi ảnh có nút X để xoá. */
+/** Lightbox xem ảnh full — bấm nền hoặc nút X để đóng. */
+function ImageLightbox({ url, onClose }: { url: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
+      onClick={onClose}
+    >
+      <div className="absolute right-4 top-4 flex items-center gap-2">
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          aria-label="Mở ảnh ở tab khác"
+          title="Mở ảnh ở tab khác"
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white hover:bg-white/25"
+        >
+          <ExternalLink className="h-4 w-4" />
+        </a>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Đóng"
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white hover:bg-white/25"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={url}
+        alt=""
+        onClick={(e) => e.stopPropagation()}
+        className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
+      />
+    </div>
+  );
+}
+
+/** Preview các link ảnh trong Customer Image — bấm ảnh xem to, có nút mở link & nút X xoá. */
 function ImagePreviews({ value, onChange }: { value: string; onChange?: (v: string) => void }) {
+  const [lightbox, setLightbox] = useState<string | null>(null);
+  // Chỉ preview ảnh cho link https (bỏ qua text/ghi chú không phải link ảnh).
   const urls = value
     .split(/\r?\n/)
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter((s) => /^https:\/\//i.test(s));
   if (urls.length === 0) return null;
 
   const remove = (url: string) => {
@@ -77,28 +126,46 @@ function ImagePreviews({ value, onChange }: { value: string; onChange?: (v: stri
   };
 
   return (
-    <div className="mt-1.5 flex flex-wrap gap-1.5">
-      {urls.map((u, i) => (
-        <div key={`${i}-${u}`} className="group relative h-16 w-16 shrink-0">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={u}
-            alt=""
-            className="h-16 w-16 rounded-lg border border-border object-cover"
-          />
-          {onChange ? (
+    <>
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {urls.map((u, i) => (
+          <div key={`${i}-${u}`} className="group relative h-16 w-16 shrink-0">
             <button
               type="button"
-              onClick={() => remove(u)}
-              aria-label="Xoá ảnh"
-              className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-foreground text-white opacity-0 transition-opacity hover:bg-black group-hover:opacity-100"
+              onClick={() => setLightbox(u)}
+              aria-label="Xem ảnh"
+              className="block h-16 w-16 cursor-zoom-in overflow-hidden rounded-lg border border-border"
             >
-              <X className="h-3 w-3" />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={u} alt="" className="h-16 w-16 object-cover" />
             </button>
-          ) : null}
-        </div>
-      ))}
-    </div>
+            {/* Icon mở link ảnh ở tab khác (góc dưới-phải) */}
+            <a
+              href={u}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              aria-label="Mở ảnh ở tab khác"
+              title="Mở ảnh ở tab khác"
+              className="absolute bottom-1 right-1 flex h-5 w-5 items-center justify-center rounded-md bg-black/60 text-white opacity-0 transition-opacity hover:bg-black/80 group-hover:opacity-100"
+            >
+              <ExternalLink className="h-3 w-3" />
+            </a>
+            {onChange ? (
+              <button
+                type="button"
+                onClick={() => remove(u)}
+                aria-label="Xoá ảnh"
+                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-foreground text-white opacity-0 transition-opacity hover:bg-black group-hover:opacity-100"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            ) : null}
+          </div>
+        ))}
+      </div>
+      {lightbox ? <ImageLightbox url={lightbox} onClose={() => setLightbox(null)} /> : null}
+    </>
   );
 }
 
