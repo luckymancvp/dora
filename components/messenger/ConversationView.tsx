@@ -44,6 +44,7 @@ export function ConversationView({
   autoFetchAI = true,
   aiTrigger = 0,
   onResolveMeta,
+  onDismiss,
 }: {
   conversationId: number;
   meta?: TabMeta;
@@ -61,6 +62,8 @@ export function ConversationView({
   aiTrigger?: number;
   /** Báo tên/avatar lấy được từ messages (khi mở deep-link chưa có meta) để cập nhật tab. */
   onResolveMeta?: (meta: TabMeta) => void;
+  /** Bảng xử lý: bỏ hội thoại khỏi danh sách lọc (không xử lý). Có → hiện nút X ở header. */
+  onDismiss?: () => void;
 }) {
   const [internalDraft, setInternalDraft] = useState("");
   const draft = controlledDraft ?? internalDraft;
@@ -243,7 +246,7 @@ export function ConversationView({
     .filter((o) => o.text);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-card">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-card">
       <header className="flex shrink-0 items-center gap-2.5 border-b border-border px-4 py-3">
         {onBack ? (
           <button
@@ -311,6 +314,16 @@ export function ConversationView({
               }
             >
               <Info className="h-4 w-4" />
+            </button>
+          ) : null}
+          {onDismiss ? (
+            <button
+              onClick={onDismiss}
+              aria-label="Bỏ hội thoại khỏi danh sách"
+              title="Bỏ khỏi danh sách (không xử lý)"
+              className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            >
+              <X className="h-4 w-4" />
             </button>
           ) : null}
         </div>

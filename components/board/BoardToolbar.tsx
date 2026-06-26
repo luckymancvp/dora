@@ -10,6 +10,7 @@ import {
   Loader2,
   Columns3,
   Eraser,
+  Filter,
   X,
 } from "lucide-react";
 import { ShopFilter } from "@/components/messenger/ShopFilter";
@@ -39,6 +40,8 @@ export function BoardToolbar({
   onMaxMessages,
   waitingHours,
   onWaitingHours,
+  onApply,
+  filtersDirty,
   columns,
   onColumns,
   pageSize,
@@ -61,6 +64,8 @@ export function BoardToolbar({
   onMaxMessages: (v: number | null) => void;
   waitingHours: number | null;
   onWaitingHours: (v: number | null) => void;
+  onApply: () => void;
+  filtersDirty: boolean;
   columns: number;
   onColumns: (n: number) => void;
   pageSize: number;
@@ -143,6 +148,9 @@ export function BoardToolbar({
           <Input
             value={filters.search}
             onChange={(e) => onFiltersChange({ search: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onApply();
+            }}
             placeholder="Tìm tên, nội dung, hoặc #đơn"
             className="h-9 rounded-full border-0 bg-secondary pl-9 text-sm"
           />
@@ -232,6 +240,20 @@ export function BoardToolbar({
           />
           giờ
         </label>
+        <button
+          onClick={onApply}
+          title="Áp dụng bộ lọc đang chọn"
+          className={cn(
+            "ml-auto flex h-9 items-center gap-1.5 rounded-full px-5 text-sm font-bold transition-colors",
+            filtersDirty
+              ? "bg-primary text-white hover:bg-primary/90"
+              : "border border-border bg-card text-muted-foreground hover:bg-secondary",
+          )}
+        >
+          <Filter className="h-4 w-4" />
+          Lọc
+          {filtersDirty && <span className="h-2 w-2 rounded-full bg-white" />}
+        </button>
       </div>
 
       {/* Hàng 4: điền mẫu + hành động hàng loạt */}

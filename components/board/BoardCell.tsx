@@ -24,12 +24,14 @@ export function BoardCell({
   onDraftChange,
   status,
   aiTrigger,
+  onDismiss,
 }: {
   conv: ConversationListItem;
   draft: string;
   onDraftChange: (v: string) => void;
   status: CellStatus;
   aiTrigger: number;
+  onDismiss: () => void;
 }) {
   const [infoOpen, setInfoOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
@@ -63,6 +65,7 @@ export function BoardCell({
         onToggleInfo={() => setInfoOpen((v) => !v)}
         notesOpen={notesOpen}
         onToggleNotes={() => setNotesOpen((v) => !v)}
+        onDismiss={onDismiss}
       />
       <SlideInPanel open={notesOpen}>
         <NotesPanel

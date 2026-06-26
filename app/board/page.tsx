@@ -26,9 +26,14 @@ const DEFAULT_FILTERS: ConversationFilters = {
 };
 
 export default function BoardPage() {
+  // Bộ lọc ĐÃ ÁP DỤNG — điều khiển truy vấn + render. Chỉ đổi khi bấm "Lọc".
   const [filters, setFilters] = useState<ConversationFilters>(DEFAULT_FILTERS);
   const [maxMessages, setMaxMessages] = useState<number | null>(null);
   const [waitingHours, setWaitingHours] = useState<number | null>(null);
+  // Bộ lọc ĐANG SOẠN — người dùng chỉnh trên toolbar, chưa áp dụng tới khi bấm "Lọc".
+  const [draftFilters, setDraftFilters] = useState<ConversationFilters>(DEFAULT_FILTERS);
+  const [draftMaxMessages, setDraftMaxMessages] = useState<number | null>(null);
+  const [draftWaitingHours, setDraftWaitingHours] = useState<number | null>(null);
   const [columns, setColumns] = useState(2);
   const [pageSize, setPageSize] = useState(20);
 
@@ -40,10 +45,23 @@ export default function BoardPage() {
 
   const dispatch = useBoardDispatch();
 
+  // Toolbar chỉnh BẢN SOẠN; chỉ "Lọc" mới đẩy sang bản áp dụng.
   const onFiltersChange = useCallback(
-    (patch: Partial<ConversationFilters>) => setFilters((f) => ({ ...f, ...patch })),
+    (patch: Partial<ConversationFilters>) => setDraftFilters((f) => ({ ...f, ...patch })),
     [],
   );
+
+  // Đã chỉnh nhưng chưa áp dụng → còn "bẩn", cần bấm Lọc.
+  const filtersDirty =
+    JSON.stringify(draftFilters) !== JSON.stringify(filters) ||
+    draftMaxMessages !== maxMessages ||
+    draftWaitingHours !== waitingHours;
+
+  const applyFilters = useCallback(() => {
+    setFilters(draftFilters);
+    setMaxMessages(draftMaxMessages);
+    setWaitingHours(draftWaitingHours);
+  }, [draftFilters, draftMaxMessages, draftWaitingHours]);
 
   const { items, hasNextPage, isFetchingNextPage, fetchNextPage, isLoading } =
     useConversations(filters);
@@ -55,12 +73,20 @@ export default function BoardPage() {
   const filtersKey = JSON.stringify(filters);
   const retainMapRef = useRef<Map<number, ConversationListItem>>(new Map());
   const [retainOrder, setRetainOrder] = useState<number[]>([]);
+  // Hội thoại người dùng đã bấm X để bỏ khỏi danh sách (không xử lý).
+  const [dismissed, setDismissed] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     // Đổi bộ lọc → bắt đầu phiên giữ mới.
     retainMapRef.current = new Map();
     setRetainOrder([]);
+    setDismissed(new Set());
   }, [filtersKey]);
+
+  const dismiss = useCallback(
+    (id: number) => setDismissed((prev) => new Set(prev).add(id)),
+    [],
+  );
 
   useEffect(() => {
     const map = retainMapRef.current;
@@ -87,6 +113,7 @@ export default function BoardPage() {
   const filtered = useMemo(() => {
     const now = Date.now();
     return retainedItems.filter((c) => {
+      if (dismissed.has(c.conversationId)) return false;
       if (maxMessages != null && !(c.messageCount < maxMessages)) return false;
       if (waitingHours != null) {
         const ageH = (now - c.lastMessageDate * 1000) / 3_600_000;
@@ -94,7 +121,7 @@ export default function BoardPage() {
       }
       return true;
     });
-  }, [retainedItems, maxMessages, waitingHours]);
+  }, [retainedItems, maxMessages, waitingHours, dismissed]);
 
   const limit = Math.min(pageSize, HARD_CAP);
   const cells = filtered.slice(0, limit);
@@ -179,12 +206,14 @@ export default function BoardPage() {
   return (
     <div className="flex h-full flex-col bg-background">
       <BoardToolbar
-        filters={filters}
+        filters={draftFilters}
         onFiltersChange={onFiltersChange}
-        maxMessages={maxMessages}
-        onMaxMessages={setMaxMessages}
-        waitingHours={waitingHours}
-        onWaitingHours={setWaitingHours}
+        maxMessages={draftMaxMessages}
+        onMaxMessages={setDraftMaxMessages}
+        waitingHours={draftWaitingHours}
+        onWaitingHours={setDraftWaitingHours}
+        onApply={applyFilters}
+        filtersDirty={filtersDirty}
         columns={columns}
         onColumns={setColumns}
         pageSize={pageSize}
@@ -223,6 +252,7 @@ export default function BoardPage() {
                   onDraftChange={(v) => setDraft(c.conversationId, v)}
                   status={cellStatus(c.conversationId)}
                   aiTrigger={aiTriggers.get(c.conversationId) ?? 0}
+                  onDismiss={() => dismiss(c.conversationId)}
                 />
               ))}
             </div>
