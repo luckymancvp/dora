@@ -3,7 +3,7 @@
  * Model text-embedding-004: 768 chiều, đủ tốt cho truy xuất ví dụ trả lời tương tự.
  */
 
-const EMBED_MODEL = "text-embedding-004";
+const EMBED_MODEL = "gemini-embedding-001";
 /** Số chiều vector — dùng khi tạo Atlas Vector Search index. */
 export const EMBED_DIM = 768;
 /** Cắt bớt input quá dài để tránh lỗi/token thừa (embedding chỉ cần ngữ nghĩa). */
@@ -26,6 +26,7 @@ export async function embedText(text: string): Promise<number[]> {
     body: JSON.stringify({
       model: `models/${EMBED_MODEL}`,
       content: { parts: [{ text: text.slice(0, MAX_CHARS) }] },
+      outputDimensionality: EMBED_DIM,
     }),
   });
   if (!resp.ok) {
@@ -51,6 +52,7 @@ export async function embedBatch(texts: string[]): Promise<number[][]> {
       requests: texts.map((t) => ({
         model: `models/${EMBED_MODEL}`,
         content: { parts: [{ text: t.slice(0, MAX_CHARS) }] },
+        outputDimensionality: EMBED_DIM,
       })),
     }),
   });
