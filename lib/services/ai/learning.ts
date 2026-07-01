@@ -3,7 +3,7 @@ import {
   getConversationsCollection,
 } from "@/lib/db/collections";
 import { getConversationMessages } from "@/lib/services/message-read";
-import { addReplyExample } from "@/lib/services/ai/reply-examples";
+import { addReplyExample, enforceExampleCap } from "@/lib/services/ai/reply-examples";
 import type { AIResponse, ConversationDoc, SuggestionOutcome } from "@/lib/types/etsy";
 
 /**
@@ -71,7 +71,7 @@ export async function captureSentReply(input: CaptureInput): Promise<void> {
         lastCustomer.message.trim().length >= MIN_CUSTOMER_LEN &&
         sent.length >= MIN_REPLY_LEN
       ) {
-        await addReplyExample({
+        const added = await addReplyExample({
           shopId: input.shopId,
           shopName: input.shopName,
           intentTag,
@@ -79,6 +79,8 @@ export async function captureSentReply(input: CaptureInput): Promise<void> {
           staffReply: sent,
           source: "sent",
         });
+        // Vượt trần 3000 → xoá ví dụ cũ nhất (FIFO).
+        if (added) await enforceExampleCap();
       }
     }
   } catch (err) {

@@ -103,6 +103,8 @@ const REPLY_EXAMPLE_INDEXES: IndexDef[] = [
   { keys: { shopId: 1, created_at: -1 }, options: { name: "idx_shop_created" } },
   // Chống trùng ví dụ (seed/learning idempotent). Vector index tạo riêng trong Atlas.
   { keys: { dedupKey: 1 }, options: { name: "uq_dedup", unique: true } },
+  // Cắt FIFO khi vượt trần: tìm ví dụ cũ nhất theo created_at.
+  { keys: { created_at: 1 }, options: { name: "idx_created_at" } },
 ];
 
 const AI_EVENT_INDEXES: IndexDef[] = [

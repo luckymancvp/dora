@@ -4,7 +4,7 @@ import { auth } from "@/auth";
 import { getConversationsCollection, getReplyExamplesCollection } from "@/lib/db/collections";
 import { getConversationMessages } from "@/lib/services/message-read";
 import { embedBatch } from "@/lib/services/ai/embeddings";
-import { addReplyExample, makeDedupKey } from "@/lib/services/ai/reply-examples";
+import { addReplyExample, enforceExampleCap, makeDedupKey } from "@/lib/services/ai/reply-examples";
 import { firstNumber } from "@/lib/services/etsy-utils";
 import type { ConversationDoc } from "@/lib/types/etsy";
 
@@ -101,11 +101,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Giữ kho ≤ trần (FIFO xoá cũ nhất).
+    const trimmedOldest = await enforceExampleCap();
+
     return NextResponse.json({
       scannedConversations: convs.length,
       pairsFound: pairs.length,
       alreadyStored: pairs.length - todo.length,
       inserted,
+      trimmedOldest,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

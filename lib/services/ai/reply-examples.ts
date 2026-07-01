@@ -18,6 +18,8 @@ const VECTOR_INDEX = "reply_examples_vector";
 const TOP_K = 3;
 /** Trần ứng viên nạp cho cosine fallback (đủ ở quy mô shop, tránh kéo cả kho). */
 const FALLBACK_CANDIDATES = 1000;
+/** Trần tổng số ví dụ trong kho (FIFO: vượt thì xoá cũ nhất). */
+const MAX_EXAMPLES = 3000;
 
 export function makeDedupKey(shopId: number, customerSnippet: string, staffReply: string): string {
   return createHash("sha1").update(`${shopId}|${customerSnippet}|${staffReply}`).digest("hex");
@@ -63,6 +65,26 @@ export async function addReplyExample(input: AddExampleInput): Promise<boolean> 
     created_at: new Date(),
   });
   return true;
+}
+
+/**
+ * Giữ kho ≤ MAX_EXAMPLES: xoá các ví dụ CŨ NHẤT (theo created_at) vượt ngưỡng.
+ * Gọi sau khi thêm ví dụ (learning) hoặc cuối mỗi lần seed. Trả số bản ghi đã xoá.
+ */
+export async function enforceExampleCap(): Promise<number> {
+  const coll = await getReplyExamplesCollection();
+  const total = await coll.countDocuments();
+  const over = total - MAX_EXAMPLES;
+  if (over <= 0) return 0;
+  const oldest = await coll
+    .find({}, { projection: { _id: 1 } })
+    .sort({ created_at: 1, _id: 1 })
+    .limit(over)
+    .toArray();
+  const ids = oldest.map((d) => d._id);
+  if (ids.length === 0) return 0;
+  const res = await coll.deleteMany({ _id: { $in: ids } });
+  return res.deletedCount;
 }
 
 function cosine(a: number[], b: number[]): number {
