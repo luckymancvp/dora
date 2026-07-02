@@ -46,8 +46,8 @@ export default function DashboardPage() {
           <MessageOverview filters={filters} />
           <TagsOverview filters={filters} />
           <AgentPerformance filters={filters} />
-          <AiEffectiveness filters={filters} />
           <ShopAnalytics filters={filters} />
+          <AiEffectiveness filters={filters} />
         </div>
       </div>
     </div>
