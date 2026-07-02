@@ -67,7 +67,7 @@ export function prepareDifyPrompt(ctx: PromptContext, input: string, factsBlock 
   // output format, tag) đã nằm trong systemInstruction nên không lặp lại
   // ở đây để tránh trùng token trong cùng một request Gemini.
   if (input) {
-    prompt += `Shop owner's guidance for this reply: "${input}"\n\n`;
+    prompt += `SHOP OWNER GUIDANCE (highest priority — both replies MUST carry this out, even if it differs from what the customer asked): "${input}"\n\n`;
   }
   prompt += "Generate the two reply options as JSON per the system instruction.\n";
 
@@ -158,6 +158,8 @@ A reply that could work for hundreds of customers is BAD.
 Reference ONLY the one detail needed to answer it.
 Do NOT recap or summarize the whole conversation,
 and do NOT restate everything that already happened.
+(Exception: if SHOP OWNER GUIDANCE is given below, follow that
+even if it differs from the customer's latest message.)
 
 3. Do NOT make replies overly short or abrupt.
 Avoid replies that feel cold, unfinished, or robotic.
@@ -370,23 +372,25 @@ HARD REQUIREMENTS
     sb += `
 
 ==================================================
-SHOP OWNER GUIDANCE
+SHOP OWNER GUIDANCE — HIGHEST PRIORITY
 ==================================================
 
-The seller specifically wants to communicate this:
+The seller wrote what THEY want to say to the customer:
 
 "${input}"
 
-All 2 options MUST preserve this intent.
+This overrides everything else, including rule #2:
+- BOTH reply options MUST actually carry out this guidance.
+- Say what the SELLER wants — even if the customer just asked
+  for something different or proposed another option. Follow the
+  SELLER, not the customer's latest message.
+- Do NOT dilute, soften away, or drop the seller's point.
 
-You may vary:
-- tone
-- phrasing
-- structure
-- warmth
-- whether you ask a follow-up question
+The guidance is in the seller's own words (often Vietnamese).
+Convey its MEANING in the CUSTOMER's language — never copy it literally.
 
-But DO NOT change the seller's intended meaning.
+You may only vary tone, phrasing, warmth, and structure between the
+2 options. Do NOT change the seller's intended meaning.
 `;
   }
 
