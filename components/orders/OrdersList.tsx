@@ -29,9 +29,11 @@ function groupByDate(items: OrderListItem[]): { label: string; orders: OrderList
 export function OrdersList({
   items,
   onMessage,
+  onUpdateSheet,
 }: {
   items: OrderListItem[];
   onMessage: (order: OrderListItem) => void;
+  onUpdateSheet: (order: OrderListItem) => void;
 }) {
   const groups = useMemo(() => groupByDate(items), [items]);
 
@@ -46,7 +48,7 @@ export function OrdersList({
             <span className="ml-2 text-sm text-muted-foreground">{g.orders.length}</span>
           </div>
           {g.orders.map((o) => (
-            <OrderCard key={o.id} order={o} onMessage={onMessage} />
+            <OrderCard key={o.id} order={o} onMessage={onMessage} onUpdateSheet={onUpdateSheet} />
           ))}
         </div>
       ))}
