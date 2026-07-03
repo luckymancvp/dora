@@ -504,6 +504,7 @@ export async function callChatGPTAPI(prompt: string): Promise<string> {
       n: 1,
     }),
   });
+  
   const data = (await resp.json()) as {
     choices?: { message?: { content?: string } }[];
   };
