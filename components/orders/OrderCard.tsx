@@ -106,14 +106,19 @@ export function OrderCard({
             <div className="min-w-0 text-sm">
               <p className="line-clamp-2 font-medium text-foreground">{t.title}</p>
               <p className="text-muted-foreground">Quantity {t.quantity}</p>
-              {t.personalization && (
-                <p className="mt-1 text-xs font-medium text-muted-foreground">Personalization</p>
-              )}
+              {/* Thứ tự bám Etsy: option (Color, Size) trước, Personalization sau cùng. */}
               {t.variations.map((v, i) => (
                 <p key={i} className="text-muted-foreground">
                   <span className="text-foreground">{v.property}</span> {v.value}
                 </p>
               ))}
+              {t.personalization && (
+                <div className="mt-1">
+                  <p className="text-xs font-medium text-muted-foreground">Personalization</p>
+                  {/* Giá trị có thể nhiều dòng ("My Husband\nWendy") → giữ xuống dòng. */}
+                  <p className="whitespace-pre-line text-foreground">{t.personalization}</p>
+                </div>
+              )}
               <PersonalizationPhotos t={t} />
             </div>
           </div>
