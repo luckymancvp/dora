@@ -21,7 +21,7 @@ function isoDaysAgo(days: number): string {
  * Gọi bởi Vercel Cron (mỗi 2 tiếng, xem vercel.json). Bảo vệ bằng CRON_SECRET:
  * Vercel gửi header `Authorization: Bearer <CRON_SECRET>`.
  *
- * Với mỗi shop online → publish "fetch-orders" (fire-and-forget) cửa sổ 30 ngày,
+ * Với mỗi shop online → publish "fetch-orders" (fire-and-forget) cửa sổ 3 ngày,
  * y hệt nút "Fetch orders" thủ công. Shop offline được bỏ qua (extension không nghe).
  */
 export async function GET(req: NextRequest) {
@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const dateFrom = isoDaysAgo(30);
+    const dateFrom = isoDaysAgo(3);
     const dateTo = isoDaysAgo(0);
 
     const shops = await getShops();
