@@ -57,7 +57,8 @@ export async function createAIResponse(
     return mock;
   }
 
-  // Lấy tối đa 40 tin gần nhất (asc), prompt chỉ dùng 8 tin cuối.
+  // Lấy tối đa 40 tin gần nhất (asc), prompt chỉ dùng 6 tin cuối.
+  const t0 = Date.now();
   const { items, shopUserId } = await getConversationMessages({ conversationId, limit: 40 });
   const customerId = firstNumber(conv, ["etsy.other_user.user_id"]) ?? 0;
   const customerName = firstString(conv, [
@@ -79,8 +80,12 @@ export async function createAIResponse(
   };
 
   // GĐ1 grounding + GĐ2 few-shot: đơn hàng thật + chính sách + ví dụ trả lời thật.
-  const orders = await getOrderContextForConversation(customerId);
-  const examplesBlock = await getExamplesBlockForConversation(shopUserId, items);
+  // Hai nguồn độc lập → chạy song song (examples còn gọi API embedding, tuần tự
+  // từng cộng thẳng vào thời gian chờ của user).
+  const [orders, examplesBlock] = await Promise.all([
+    getOrderContextForConversation(customerId),
+    getExamplesBlockForConversation(shopUserId, items),
+  ]);
   const factsBlock = [
     formatOrdersForPrompt(orders),
     formatKnowledgeBaseForPrompt(),
@@ -89,9 +94,15 @@ export async function createAIResponse(
     .filter(Boolean)
     .join("\n\n");
 
+  const tRetrieved = Date.now();
   const prompt = prepareDifyPrompt(ctx, input, factsBlock);
   const raw = await callGeminiAPI(prompt, input);
+  const tGenerated = Date.now();
   const result = processAIResponse(raw);
+  // Log breakdown để xác nhận tối ưu latency có tác dụng thật trên prod.
+  console.log(
+    `[ai] suggestion conv=${conversationId} retrieval=${tRetrieved - t0}ms gemini=${tGenerated - tRetrieved}ms total=${tGenerated - t0}ms`,
+  );
 
   // Auto tag (mirror DORA): có tag → giữ đúng 1 AI tag; không → bỏ hết AI tag.
   if (result.suggested_tag && AI_TAGS.has(result.suggested_tag)) {
