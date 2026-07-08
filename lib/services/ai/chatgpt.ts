@@ -440,13 +440,15 @@ You may only vary tone, phrasing, warmth, and structure between the
   return sb;
 }
 
-/** CallGeminiAPI: gemini-3-flash (thinking nhỏ), JSON output có responseSchema khoá cứng. */
+/** CallGeminiAPI: gemini-3.1-flash-lite (thinking nhỏ), JSON output có responseSchema khoá cứng. */
 export async function callGeminiAPI(prompt: string, input: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY chưa cấu hình");
-  // Hạ từ 3.5-flash xuống 3-flash (2026-07): reply ngắn có grounding không cần
-  // model lớn hơn, đổi lấy latency thấp hơn theo phản ánh của user.
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash:generateContent?key=${apiKey}`;
+  // Hạ từ 3.5-flash xuống 3.1-flash-lite (2026-07): reply ngắn có grounding
+  // không cần model lớn, đổi lấy latency thấp (đo ~2s vs ~3.8s). LƯU Ý: tên
+  // "gemini-3-flash" KHÔNG tồn tại trên API (404) — chỉ có bản -preview;
+  // dùng 3.1-flash-lite vì là bản ổn định, không rủi ro bị gỡ như preview.
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`;
 
   const body = {
     systemInstruction: { parts: [{ text: buildGeminiSystemInstruction(input) }] },
@@ -492,7 +494,13 @@ export async function callGeminiAPI(prompt: string, input: string): Promise<stri
   });
   const data = (await resp.json()) as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];
+    error?: { code?: number; message?: string };
   };
+  // Nêu rõ lỗi API (404 model sai, 429 quota…) thay vì nuốt body rồi báo
+  // "failed to parse" chung chung — từng làm mất dấu vết lỗi model không tồn tại.
+  if (!resp.ok || data.error) {
+    throw new Error(`Gemini API ${resp.status}: ${data.error?.message ?? "unknown error"}`);
+  }
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
   if (typeof text !== "string") {
     throw new Error("failed to parse Gemini response");
