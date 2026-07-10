@@ -45,7 +45,7 @@ export function FetchOrdersButton({
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [customShops, setCustomShops] = useState(""); // tên shop tự nhập, phân tách bằng phẩy/xuống dòng
-  const [dateFrom, setDateFrom] = useState(() => isoDaysAgo(30));
+  const [dateFrom, setDateFrom] = useState(() => isoDaysAgo(3));
   const [dateTo, setDateTo] = useState(() => isoDaysAgo(0));
   const [loading, setLoading] = useState(false);
 
