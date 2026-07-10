@@ -126,7 +126,8 @@ export default function AutoRepliesPage() {
   };
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-3xl px-6 py-8">
       <div className="mb-6 flex items-center gap-3">
         <Link
           href="/messages"
@@ -270,6 +271,7 @@ export default function AutoRepliesPage() {
           )}
         </ul>
       )}
+      </div>
     </div>
   );
 }
