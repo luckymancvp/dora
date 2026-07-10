@@ -15,6 +15,26 @@ import type { EtsyOrderDoc, OrderListItem } from "@/lib/types/etsy";
 /** Số đơn gần nhất đưa vào prompt (giới hạn để tiết kiệm token). */
 const MAX_ORDERS_FOR_PROMPT = 3;
 
+/**
+ * Link tracking CÔNG KHAI chính thức theo hãng — chỉ dựng cho hãng có URL
+ * pattern chuẩn 100%; hãng khác trả "" (prompt chỉ đưa carrier + mã).
+ * KHÔNG dùng tracking_url lưu trong order_tracking: đó là link
+ * etsy.com/your/orders/... nội bộ của tài khoản shop, khách bấm vào bị chặn.
+ */
+function publicTrackingUrl(carrier: string, code: string): string {
+  const c = carrier.trim().toLowerCase();
+  const e = encodeURIComponent(code.trim());
+  if (!e) return "";
+  // Định dạng mới của USPS (link cũ /go/TrackConfirmAction?tLabels= vẫn sống
+  // nhưng bị redirect về đây — xác nhận bằng trình duyệt 2026-07).
+  if (c.includes("usps")) return `https://tools.usps.com/tracking/${e}`;
+  if (c.includes("ups")) return `https://www.ups.com/track?loc=en_US&tracknum=${e}`;
+  if (c.includes("fedex")) return `https://www.fedex.com/fedextrack/?trknbr=${e}`;
+  // DHL: không có URL pattern công khai được xác nhận chắc chắn (2026-07) →
+  // không dựng link, prompt chỉ đưa "DHL <mã>" (quy tắc: không chuẩn 100% thì thôi).
+  return "";
+}
+
 /** unix giây → "YYYY-MM-DD" (UTC). Trả "" nếu không có/không hợp lệ. */
 function fmtDate(unixSec: number): string {
   if (!unixSec || unixSec <= 0) return "";
@@ -67,7 +87,9 @@ export function formatOrdersForPrompt(orders: OrderListItem[]): string {
   const lines: string[] = ["<orders>"];
   lines.push(
     `The customer has ${orders.length} recent order(s) on record. ` +
-      `Use ONLY these facts; do not invent any other order details.`,
+      `Use ONLY these facts; do not invent any other order details. ` +
+      `Tracking links below are public carrier pages, safe to share with the customer. ` +
+      `If a tracking has NO link, give only the carrier name + tracking code — NEVER make up a URL.`,
   );
 
   for (const o of orders) {
@@ -106,12 +128,13 @@ export function formatOrdersForPrompt(orders: OrderListItem[]): string {
       }
     }
 
-    // Tracking thật.
+    // Tracking thật — link chỉ khi dựng được URL công khai của hãng (tr.url là
+    // link nội bộ etsy.com của shop, không bao giờ đưa cho khách).
     for (const tr of o.trackings) {
       const carrier = tr.carrier ? `${tr.carrier} ` : "";
       const delivered = tr.isDelivered ? "delivered" : "not delivered yet";
-      const url = tr.url ? ` ${tr.url}` : "";
-      lines.push(`  Tracking: ${carrier}${tr.code} (${delivered})${url}`);
+      const publicUrl = publicTrackingUrl(tr.carrier ?? "", tr.code);
+      lines.push(`  Tracking: ${carrier}${tr.code} (${delivered})${publicUrl ? ` ${publicUrl}` : ""}`);
     }
   }
 
