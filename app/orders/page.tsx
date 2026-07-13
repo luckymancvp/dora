@@ -134,8 +134,14 @@ export default function OrdersPage() {
             <>
               <OrdersList
                 items={items}
-                onMessage={setMessageOrder}
-                onUpdateSheet={setSheetOrder}
+                onMessage={(o) => {
+                  setSheetOrder(null);
+                  setMessageOrder(o);
+                }}
+                onUpdateSheet={(o) => {
+                  setMessageOrder(null);
+                  setSheetOrder(o);
+                }}
               />
               <OrdersPagination
                 page={data?.page ?? 1}

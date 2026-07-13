@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ExternalLink, Loader2, Send, X } from "lucide-react";
+import { ExternalLink, Loader2, MessageSquare, Send, X } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { ImageLightbox, MessageBubble } from "@/components/messenger/MessageBubble";
@@ -15,7 +15,7 @@ interface OrderConversation {
   messages: MessageItem[];
 }
 
-/** Dialog nhắn khách theo đơn — hiện full hội thoại cũ (nếu có) trước khi gửi. */
+/** Panel nhắn khách theo đơn (trượt từ phải, non-modal) — hiện full hội thoại cũ (nếu có) trước khi gửi. */
 export function MessageBuyerDialog({
   order,
   onClose,
@@ -32,7 +32,16 @@ export function MessageBuyerDialog({
   const threadEndRef = useRef<HTMLDivElement>(null);
   const noShop = !order.shopName.trim();
 
-  // Tải hội thoại hiện có của khách khi mở dialog.
+  // Đóng bằng phím Esc (giống OrderSheetSidebar).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Tải hội thoại hiện có của khách khi mở panel.
   useEffect(() => {
     let alive = true;
     setLoadingConvo(true);
@@ -93,18 +102,18 @@ export function MessageBuyerDialog({
   const hasThread = !!convo?.conversationId && convo.messages.length > 0;
 
   return (
+    // Panel không chặn tương tác (non-modal): không có overlay, trang chính vẫn click được.
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={onClose}
+      className="fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-border bg-background shadow-xl"
+      role="dialog"
     >
-      <div
-        className="flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-border bg-background p-5 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-3 flex items-start justify-between">
-          <div>
-            <h2 className="text-base font-semibold text-foreground">Nhắn khách</h2>
-            <p className="text-sm text-muted-foreground">
+        <div className="flex items-start justify-between gap-2 border-b border-border p-4">
+          <div className="min-w-0">
+            <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
+              <MessageSquare className="h-5 w-5 text-primary" />
+              Nhắn khách
+            </h2>
+            <p className="mt-0.5 truncate text-sm text-muted-foreground">
               {order.buyerName || convo?.buyerName || "Khách"} · Order #{order.orderId}
             </p>
           </div>
@@ -128,6 +137,7 @@ export function MessageBuyerDialog({
           </div>
         </div>
 
+        <div className="flex min-h-0 flex-1 flex-col p-4">
         {/* Hội thoại hiện có — hiển thị y hệt trang Messenger */}
         <div className="mb-3 min-h-0 flex-1 overflow-y-auto rounded-xl bg-card py-3">
           {loadingConvo ? (

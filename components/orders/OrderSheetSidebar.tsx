@@ -28,12 +28,11 @@ export function OrderSheetSidebar({
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true">
-      {/* Overlay */}
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} aria-hidden />
-
-      {/* Panel */}
-      <div className="relative flex h-full w-full max-w-md flex-col border-l border-border bg-background shadow-xl">
+    // Panel không chặn tương tác (non-modal): không có overlay, trang chính vẫn click được.
+    <div
+      className="fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-border bg-background shadow-xl"
+      role="dialog"
+    >
         <div className="flex items-start justify-between gap-2 border-b border-border p-4">
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
@@ -62,7 +61,6 @@ export function OrderSheetSidebar({
           ) : (
             <SheetReceiptEditor store={order.shopName} receiptId={order.orderId} />
           )}
-        </div>
       </div>
     </div>
   );
