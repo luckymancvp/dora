@@ -28,6 +28,15 @@ export function etsyText(raw: string): string {
   return s;
 }
 
+/**
+ * Đổi URL ảnh Etsy sang bản gốc: il_<W>x<H>. → il_fullxfull.
+ * Tổng quát mọi kích thước (75x75, 170x135, 300x300…). Không match → trả nguyên.
+ */
+export function etsyFullResUrl(url: string): string {
+  if (!url) return url;
+  return url.replace(/il_\d+x\d+\./, "il_fullxfull.");
+}
+
 /** Thời gian tương đối (vừa xong / 5 phút trước / 3 giờ trước …) từ unix seconds. */
 export function timeAgo(unixSeconds: number): string {
   if (!unixSeconds) return "";

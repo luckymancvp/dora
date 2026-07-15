@@ -1,6 +1,9 @@
 "use client";
 
-import { CheckCircle2, MessageCircle, SquarePen, Store, Tag, Truck } from "lucide-react";
+import { useState } from "react";
+import { Check, CheckCircle2, Copy, MessageCircle, SquarePen, Store, Tag, Truck } from "lucide-react";
+import { toast } from "sonner";
+import { etsyFullResUrl } from "@/lib/format";
 import type { OrderListItem, OrderTransaction } from "@/lib/types/etsy";
 
 /** Format unix giây → "03 Jul, 2026" (giống Etsy). */
@@ -92,37 +95,7 @@ export function OrderCard({
       {/* Sản phẩm */}
       <div className="mt-3 space-y-3">
         {order.transactions.map((t) => (
-          <div key={t.transactionId} className="flex gap-3">
-            {t.image ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={t.image}
-                alt={t.title}
-                className="h-16 w-16 shrink-0 rounded-lg object-cover"
-              />
-            ) : (
-              <div className="h-16 w-16 shrink-0 rounded-lg bg-secondary" />
-            )}
-            <div className="min-w-0 text-sm">
-              <p className="line-clamp-2 font-medium text-foreground">{t.title}</p>
-              <p className="text-muted-foreground">Quantity {t.quantity}</p>
-              {/* Thứ tự bám Etsy: option (Color, Size) trước, Personalization sau cùng. */}
-              {t.variations.map((v, i) => (
-                <p key={i} className="text-muted-foreground">
-                  <span className="text-foreground">{v.property}</span> {v.value}
-                </p>
-              ))}
-              {/* Mỗi dòng personalization giữ nhãn riêng (Personalization / Back Side / Your Photo…). */}
-              {t.personalizations.map((p, i) => (
-                <div key={i} className="mt-1">
-                  <p className="text-xs font-medium text-muted-foreground">{p.label}</p>
-                  {/* Giá trị có thể nhiều dòng ("My Husband\nWendy") → giữ xuống dòng. */}
-                  <p className="whitespace-pre-line text-foreground">{p.value}</p>
-                </div>
-              ))}
-              <PersonalizationPhotos t={t} />
-            </div>
-          </div>
+          <OrderItemRow key={t.transactionId} t={t} />
         ))}
       </div>
 
@@ -164,6 +137,73 @@ export function OrderCard({
             </p>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** 1 dòng sản phẩm: ảnh (kèm nút copy URL fullxfull) + tiêu đề + số lượng + transactionId + variation. */
+function OrderItemRow({ t }: { t: OrderTransaction }) {
+  // State copied cục bộ per-item để đổi icon Copy → Check sau khi copy.
+  const [copied, setCopied] = useState(false);
+
+  async function copyImage() {
+    if (!t.image) return;
+    try {
+      // Luôn copy bản gốc il_fullxfull. thay vì thumbnail il_75x75.
+      await navigator.clipboard.writeText(etsyFullResUrl(t.image));
+      setCopied(true);
+      toast.success("Đã copy địa chỉ ảnh (fullxfull)");
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error("Không copy được địa chỉ ảnh");
+    }
+  }
+
+  return (
+    <div className="flex gap-3">
+      <div className="group relative h-16 w-16 shrink-0">
+        {t.image ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={t.image}
+            alt={t.title}
+            className="h-16 w-16 rounded-lg object-cover"
+          />
+        ) : (
+          <div className="h-16 w-16 rounded-lg bg-secondary" />
+        )}
+        {t.image && (
+          <button
+            type="button"
+            onClick={copyImage}
+            title="Copy địa chỉ ảnh (fullxfull)"
+            className="absolute right-1 top-1 rounded-md bg-background/80 p-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+          >
+            {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        )}
+      </div>
+      <div className="min-w-0 text-sm">
+        <p className="line-clamp-2 font-medium text-foreground">{t.title}</p>
+        <p className="text-muted-foreground">Quantity {t.quantity}</p>
+        {/* Mã transaction của item — mảnh phụ, bám tông muted hiện có. */}
+        <p className="text-xs text-muted-foreground">#{t.transactionId}</p>
+        {/* Thứ tự bám Etsy: option (Color, Size) trước, Personalization sau cùng. */}
+        {t.variations.map((v, i) => (
+          <p key={i} className="text-muted-foreground">
+            <span className="text-foreground">{v.property}</span> {v.value}
+          </p>
+        ))}
+        {/* Mỗi dòng personalization giữ nhãn riêng (Personalization / Back Side / Your Photo…). */}
+        {t.personalizations.map((p, i) => (
+          <div key={i} className="mt-1">
+            <p className="text-xs font-medium text-muted-foreground">{p.label}</p>
+            {/* Giá trị có thể nhiều dòng ("My Husband\nWendy") → giữ xuống dòng. */}
+            <p className="whitespace-pre-line text-foreground">{p.value}</p>
+          </div>
+        ))}
+        <PersonalizationPhotos t={t} />
       </div>
     </div>
   );

@@ -70,7 +70,7 @@ export default function OrdersPage() {
         <input
           value={filters.search}
           onChange={(e) => patch({ search: e.target.value })}
-          placeholder="Tìm theo order ID, tên khách…"
+          placeholder="Tìm theo order ID, transaction ID, tên khách…"
           className="w-full rounded-xl border-0 bg-secondary py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         />
       </div>
