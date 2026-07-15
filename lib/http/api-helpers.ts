@@ -24,5 +24,14 @@ export function errorResponse(err: unknown, tag: string): NextResponse {
       : 500;
   const message = err instanceof Error ? err.message : "Unknown error";
   if (status >= 500) console.error(`[${tag}]`, message);
-  return NextResponse.json({ error: message }, { status });
+
+  // Generic: nếu err mang `code` (string) → đính vào body để FE phân nhánh (vd version_conflict,
+  // mera_unavailable). `latest` (nếu có) cho FE reload snapshot mới nhất. Không có → giữ hành vi cũ.
+  const body: { error: string; code?: string; latest?: unknown } = { error: message };
+  const code = (err as { code?: unknown })?.code;
+  if (typeof code === "string") body.code = code;
+  const latest = (err as { latest?: unknown })?.latest;
+  if (latest !== undefined) body.latest = latest;
+
+  return NextResponse.json(body, { status });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, FileSpreadsheet, MessageCircle, Store, Tag, Truck } from "lucide-react";
+import { CheckCircle2, MessageCircle, SquarePen, Store, Tag, Truck } from "lucide-react";
 import type { OrderListItem, OrderTransaction } from "@/lib/types/etsy";
 
 /** Format unix giây → "03 Jul, 2026" (giống Etsy). */
@@ -17,11 +17,11 @@ function formatDate(unix: number): string {
 export function OrderCard({
   order,
   onMessage,
-  onUpdateSheet,
+  onUpdate,
 }: {
   order: OrderListItem;
   onMessage: (order: OrderListItem) => void;
-  onUpdateSheet: (order: OrderListItem) => void;
+  onUpdate: (order: OrderListItem) => void;
 }) {
   const addr = order.toAddress;
   return (
@@ -73,11 +73,11 @@ export function OrderCard({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button
-            onClick={() => onUpdateSheet(order)}
+            onClick={() => onUpdate(order)}
             className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-sm text-foreground hover:bg-secondary"
           >
-            <FileSpreadsheet className="h-4 w-4" />
-            Cập nhật Sheet
+            <SquarePen className="h-4 w-4" />
+            Cập nhật
           </button>
           <button
             onClick={() => onMessage(order)}

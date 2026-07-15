@@ -10,7 +10,7 @@ import { OrderFilters } from "@/components/orders/OrderFilters";
 import { OrdersPagination } from "@/components/orders/OrdersPagination";
 import { FetchOrdersButton } from "@/components/orders/FetchOrdersButton";
 import { MessageBuyerDialog } from "@/components/orders/MessageBuyerDialog";
-import { OrderSheetSidebar } from "@/components/orders/OrderSheetSidebar";
+import { OrderUpdateSidebar } from "@/components/orders/OrderUpdateSidebar";
 import type { OrderFilters as Filters, OrderListItem, OrderTab } from "@/lib/types/etsy";
 
 const TABS: OrderTab[] = ["New", "Completed"];
@@ -24,7 +24,7 @@ export default function OrdersPage() {
     page: 1,
   });
   const [messageOrder, setMessageOrder] = useState<OrderListItem | null>(null);
-  const [sheetOrder, setSheetOrder] = useState<OrderListItem | null>(null);
+  const [updateOrder, setUpdateOrder] = useState<OrderListItem | null>(null);
 
   const { data, isLoading, isFetching, refetch } = useOrders(filters);
 
@@ -135,12 +135,12 @@ export default function OrdersPage() {
               <OrdersList
                 items={items}
                 onMessage={(o) => {
-                  setSheetOrder(null);
+                  setUpdateOrder(null);
                   setMessageOrder(o);
                 }}
-                onUpdateSheet={(o) => {
+                onUpdate={(o) => {
                   setMessageOrder(null);
-                  setSheetOrder(o);
+                  setUpdateOrder(o);
                 }}
               />
               <OrdersPagination
@@ -167,8 +167,8 @@ export default function OrdersPage() {
         <MessageBuyerDialog order={messageOrder} onClose={() => setMessageOrder(null)} />
       )}
 
-      {sheetOrder && (
-        <OrderSheetSidebar order={sheetOrder} onClose={() => setSheetOrder(null)} />
+      {updateOrder && (
+        <OrderUpdateSidebar order={updateOrder} onClose={() => setUpdateOrder(null)} />
       )}
     </div>
     </div>
