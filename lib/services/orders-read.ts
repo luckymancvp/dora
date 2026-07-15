@@ -275,8 +275,17 @@ export async function getOrders(opts: OrdersQueryOpts): Promise<OrdersResponse> 
       { "data.buyer.name": { $regex: search, $options: "i" } },
       { "data.buyer.username": { $regex: search, $options: "i" } },
     ];
-    const asNum = Number(search);
-    if (Number.isFinite(asNum)) or.push({ "data.order_id": asNum });
+    // Trích dãy số LIỀN CUỐI query để bỏ prefix chữ (vd "TEST-2914171501" → 2914171501).
+    // Người bán hay copy mã kèm prefix nội bộ; Number("TEST-...") = NaN nên phải regex trước.
+    // Fallback Number(search) cho trường hợp gõ thuần số không khớp regex.
+    const m = search.match(/(\d+)\s*$/);
+    const asNum = m ? Number(m[1]) : Number(search);
+    // Chỉ push clause số khi hữu hạn — tránh nhét {order_id: NaN} làm hỏng $or.
+    if (Number.isFinite(asNum)) {
+      // order_id exact + transaction_id: Mongo tự dò array-of-subdoc bằng equality,
+      // KHÔNG cần $elemMatch vì chỉ 1 điều kiện trên mỗi phần tử.
+      or.push({ "data.order_id": asNum }, { "data.transactions.transaction_id": asNum });
+    }
     baseClauses.push({ $or: or });
   }
 
