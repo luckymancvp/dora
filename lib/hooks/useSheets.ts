@@ -13,26 +13,32 @@ import type { OrderStatusDTO } from "@/lib/types/order-status";
 export class ApiError extends Error {
   code?: string;
   status: number;
-  constructor(status: number, message: string, code?: string) {
+  /** Object mới nhất từ server khi lỗi optimistic-lock (409 version_conflict) — dùng để refetch/remount. */
+  latest?: unknown;
+  constructor(status: number, message: string, code?: string, latest?: unknown) {
     super(message);
     this.status = status;
     this.code = code;
+    this.latest = latest;
   }
 }
 
-async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
+/** Fetch JSON + ném ApiError mang code/latest. Export để useMera tái dùng cùng khuôn. */
+export async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
     let code: string | undefined;
+    let latest: unknown;
     let message = `${res.status}`;
     try {
-      const data = (await res.json()) as { error?: string; code?: string };
+      const data = (await res.json()) as { error?: string; code?: string; latest?: unknown };
       if (data.error) message = data.error;
       code = data.code;
+      latest = data.latest;
     } catch {
       /* ignore */
     }
-    throw new ApiError(res.status, message, code);
+    throw new ApiError(res.status, message, code, latest);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
