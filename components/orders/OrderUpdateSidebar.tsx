@@ -44,9 +44,6 @@ export function OrderUpdateSidebar({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Nguồn đang hiển thị (badge header).
-  const source: "Sheet" | "Mera" | null = sheetHasMatch ? "Sheet" : meraOrder ? "Mera" : null;
-
   // Lỗi Sheet (không phải chưa-kết-nối) → notice phụ khi đã rớt sang Mera.
   const sheetErrored = sheet.isError;
 
@@ -61,11 +58,6 @@ export function OrderUpdateSidebar({
           <h2 className="flex items-center gap-2 text-base font-semibold text-foreground">
             <SquarePen className="h-5 w-5 text-primary" />
             Cập nhật
-            {source ? (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
-                {source}
-              </span>
-            ) : null}
           </h2>
           <p className="mt-0.5 truncate text-sm text-muted-foreground">
             {order.buyerName || "Khách"} · Order #{order.orderId}
