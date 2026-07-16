@@ -315,6 +315,9 @@ export function SheetReceiptEditor({
         >
           <ChevronDown className={"h-4 w-4 transition-transform " + (open ? "" : "-rotate-90")} />
         </button>
+        <span className="shrink-0 rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-success">
+          Sheet
+        </span>
         <CopyCode value={orderCode} className="flex-1 break-all text-xs font-bold text-foreground" />
         {open && matches.length > 1 ? (
           <span className="shrink-0 text-[11px] text-muted-foreground">{matches.length} dòng</span>
