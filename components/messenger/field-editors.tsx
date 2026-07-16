@@ -365,3 +365,139 @@ export function FieldInput({
     />
   );
 }
+
+// ---- Renderer field ĐỘNG cho panel Mera (vòng 2) ----
+// Panel Mera không còn field cứng theo TÊN Sheet; server trả columns có `fieldKey`.
+// Chọn kiểu editor theo fieldKey (không theo label) để tái dùng các component con ở trên.
+
+/** Kiểu editor suy ra từ fieldKey của cột Mera. */
+export type MeraFieldKind = "status" | "customer_image" | "drive_link" | "textarea" | "link" | "text";
+
+/** Map fieldKey → kiểu editor. Ưu tiên khớp đặc thù trước, rồi tới nhóm chứa link/url/image. */
+export function meraFieldKind(fieldKey: string): MeraFieldKind {
+  if (fieldKey === "status") return "status";
+  if (fieldKey === "customer_image") return "customer_image";
+  // design_link/mockup_link/source_link → preview thumbnail Google Drive.
+  if (fieldKey === "design_link" || fieldKey === "mockup_link" || fieldKey === "source_link")
+    return "drive_link";
+  // note/item_note/personalization → ô văn bản dài.
+  if (/note|personalization/.test(fieldKey)) return "textarea";
+  // link/url/image (image_link, tracking.url…) → textarea nhiều dòng cho link.
+  if (/link|url|image/.test(fieldKey)) return "link";
+  return "text";
+}
+
+/** Ô hiển thị read-only (column.editable === false): link → anchor/preview, còn lại → CopyCode. */
+function MeraReadOnlyCell({ kind, value }: { kind: MeraFieldKind; value: string }) {
+  if (!value.trim()) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+  if (kind === "customer_image") {
+    return <ImagePreviews value={value} />;
+  }
+  if (kind === "drive_link") {
+    return <DriveLinkPreview value={value} />;
+  }
+  if (kind === "link") {
+    const urls = value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    return (
+      <div className="flex flex-col gap-0.5">
+        {urls.map((u, i) =>
+          /^https?:\/\//i.test(u) ? (
+            <a
+              key={`${i}-${u}`}
+              href={u}
+              target="_blank"
+              rel="noreferrer"
+              className="break-all text-xs text-primary hover:underline"
+            >
+              {u}
+            </a>
+          ) : (
+            <CopyCode key={`${i}-${u}`} value={u} className="break-all text-xs text-muted-foreground" />
+          ),
+        )}
+      </div>
+    );
+  }
+  // text/status read-only (tracking.code, id…) → giá trị có thể copy.
+  return <CopyCode value={value} className="break-all text-xs text-muted-foreground" />;
+}
+
+/**
+ * Render 1 field Mera động theo fieldKey + editable (server đã tính editable — client render "câm").
+ * editable=false → read-only cell; editable=true → editor tương ứng kiểu.
+ */
+export function MeraFieldRenderer({
+  fieldKey,
+  value,
+  onChange,
+  editable,
+  statusOptions,
+}: {
+  fieldKey: string;
+  value: string;
+  onChange: (v: string) => void;
+  editable: boolean;
+  statusOptions: string[];
+}) {
+  const kind = meraFieldKind(fieldKey);
+
+  if (!editable) {
+    return <MeraReadOnlyCell kind={kind} value={value} />;
+  }
+
+  if (kind === "status") {
+    return <StatusSelect value={value} options={statusOptions} onChange={onChange} />;
+  }
+
+  if (kind === "customer_image") {
+    return (
+      <>
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={2}
+          placeholder="Mỗi dòng 1 link ảnh…"
+          className="w-full resize-y rounded-lg border-0 bg-secondary px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        <ImagePreviews value={value} onChange={onChange} />
+      </>
+    );
+  }
+
+  if (kind === "drive_link") {
+    return (
+      <>
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={2}
+          placeholder="Link Google Drive…"
+          className="w-full resize-y rounded-lg border-0 bg-secondary px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        <DriveLinkPreview value={value} onChange={onChange} />
+      </>
+    );
+  }
+
+  if (kind === "textarea" || kind === "link") {
+    return (
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={kind === "textarea" ? 3 : 2}
+        className="w-full resize-y rounded-lg border-0 bg-secondary px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+      />
+    );
+  }
+
+  // text → input 1 dòng.
+  return (
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full rounded-lg border-0 bg-secondary px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+    />
+  );
+}
