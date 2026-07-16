@@ -5,7 +5,7 @@ import { X, Package, ChevronDown, RefreshCw } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConversationDetail } from "@/lib/hooks/useConversationDetail";
 import { TagEditor } from "@/components/messenger/TagEditor";
-import { SheetReceiptEditor } from "@/components/messenger/SheetItemEditor";
+import { ReceiptUpdateEditor } from "@/components/messenger/ReceiptUpdateEditor";
 import type { ReceiptHistoryItem } from "@/lib/types/etsy";
 
 function ReceiptCard({ r }: { r: ReceiptHistoryItem }) {
@@ -178,15 +178,15 @@ export function ReceiptHistoryPanel({
           <p className="px-1 py-4 text-sm text-muted-foreground">Khách chưa có đơn hàng.</p>
         ) : (
           <>
-            {/* Khối cập nhật Sheet — tách riêng, đặt trên cùng. 1 card / 1 đơn (receipt). */}
+            {/* Khối cập nhật đơn — ưu tiên Sheet, rớt sang Mera. 1 card / 1 đơn (receipt). */}
             {receipts.length > 0 ? (
               <section className="mb-4">
                 <h4 className="mb-2 px-1 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
-                  Cập nhật Sheet
+                  Cập nhật đơn
                 </h4>
                 <div className="flex flex-col gap-2">
                   {receipts.map((r) => (
-                    <SheetReceiptEditor
+                    <ReceiptUpdateEditor
                       key={r.receiptId}
                       store={storeName}
                       receiptId={r.receiptId}
