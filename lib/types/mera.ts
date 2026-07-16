@@ -1,80 +1,94 @@
 /**
- * Contract chung cho tính năng "Cập nhật Mera" (nhánh song song với "Cập nhật Sheet").
+ * Contract chung cho tính năng "Cập nhật Mera" — VÒNG 2 (panel field ĐỘNG).
  *
- * Một type – bốn tầng: service Mera (map snake_case → camelCase) → route `json()`
- * → hook `useMera` (cast `as T`) → component `MeraItemEditor`. KHÔNG tầng nào được
- * tự định nghĩa lại shape; mọi thay đổi shape phải sửa ở đây rồi báo cả backend + frontend.
+ * Một type – bốn tầng: service Mera (map snake_case → camelCase + resolve columns) →
+ * route `json()` → hook `useMera` (cast `as T`) → component `MeraItemEditor`. KHÔNG tầng
+ * nào được tự định nghĩa lại shape; mọi thay đổi shape phải sửa ở đây rồi báo cả backend + frontend.
  *
- * Nguồn dữ liệu: Mera Order API v2 qua fulfill backend
- * (`https://mera-fulfill-api.pamoteam.top/api/v2`, xem docs/order-api-v2.md).
- * DTO camelCase để khớp convention của lib/types/sheets.ts (không phơi snake_case ra client).
+ * KHÁC vòng 1: panel không còn render danh sách field CỨNG. Server đọc cấu hình
+ * "Order Table Columns" của Mera admin (per-project) → trả `columns: MeraColumn[]` đã
+ * chuẩn hoá (lọc visible, sort position, editable = config AND patchable AND dora-1 hỗ trợ).
+ * Giá trị field động chở qua `values: Record<fieldKey, string>` theo scope (item/order).
+ * Update dùng `updates: Record<fieldKey, string>` — server map fieldKey → PATCH body.
+ *
+ * Nguồn dữ liệu: Mera Order API v2 qua fulfill backend (`.../api/v2`); cấu hình cột lấy qua
+ * `GET <origin>/api/v1/projects/:projectId/order-table-columns` (xem _workspace/05_mera_columns_research.md).
  */
 
 // ---- Sub-objects ----
 
-/** Tracking của 1 item — CHỈ ĐỌC trên panel (Mera là nguồn ghi). */
+/** Tracking của 1 item — hiển thị theo column `tracking.*`; editable tuỳ cấu hình. */
 export interface MeraTracking {
   code: string;
   carrier: string;
   url: string;
 }
 
+// ---- Cấu hình cột động (Order Table Columns) ----
+
+/**
+ * 1 cột cấu hình của panel Mera (DTO camelCase; server map từ JSON snake_case của admin).
+ * Server TRẢ ĐÃ CHUẨN HOÁ: chỉ `visible !== false`, sort tăng theo `position`, dedupe theo
+ * `fieldKey`. `editable` là kết quả CUỐI CÙNG = `column.editable !== false` AND fieldKey thuộc
+ * whitelist patch của scope tương ứng AND dora-1 hỗ trợ (xem MERA_EDITABLE_*_FIELD_KEYS).
+ * Client KHÔNG tự tính editable — chỉ render read-only cell khi `editable === false`.
+ */
+export interface MeraColumn {
+  /** id cột từ admin (hoặc `default-*` khi fallback). */
+  id: string;
+  /** Nhãn hiển thị (từ cấu hình admin; default có nhãn tiếng Anh khớp field_defs). */
+  label: string;
+  /** field_key gốc (vd `status`, `item_note`, `tracking.code`, `note`). Khoá của `values`/`updates`. */
+  fieldKey: string;
+  /** Phạm vi dữ liệu: `item` đọc/ghi trên order_items; `order` trên orders. Server tự phân loại. */
+  scope: "order" | "item";
+  /** Vị trí sắp xếp (tăng dần). */
+  position: number;
+  /** Luôn `true` sau khi server lọc (giữ field cho đầy đủ DTO admin). */
+  visible: boolean;
+  /** editable CUỐI CÙNG (đã giao config ∩ patchable ∩ dora-1 hỗ trợ). */
+  editable: boolean;
+}
+
 // ---- DTO client (service map từ JSON snake_case của Mera API) ----
 
 /**
- * 1 item của đơn Mera (nguồn: `order_items`, xem §3/§5 order-api-v2.md).
- * Form nhanh sửa 5 field chính; popup "sửa toàn bộ field" mở thêm các field
- * user-managed còn lại. Bỏ các field dạng object/array phức tạp (provider,
- * shipping, designer) — chưa sửa được từ panel.
- * `version` dùng cho optimistic locking khi PATCH.
+ * 1 item của đơn Mera (nguồn: `order_items`). VÒNG 2: giá trị field động nằm trong `values`
+ * (key = fieldKey item-scope, giá trị đã resolve về string hiển thị). Giữ vài field typed cho
+ * UI core (không phụ thuộc cấu hình cột): `itemKey`/`version` (khoá + optimistic lock),
+ * `note` (= item_note → order_items.note, trọng tâm vòng 2), `imageLink` (thumbnail read-only).
  */
 export interface MeraOrderItem {
   /** `item_key` — khoá PATCH item: `<order_id>-<line_item_id>`. */
   itemKey: string;
   /** `order_id` — đơn cha. */
   orderId: string;
-  /** `status` — editable. */
-  status: string;
-  /** `personalization` — editable. */
-  personalization: string;
-  /** `customer_image` — editable (nhiều dòng, mỗi dòng 1 link ảnh). */
-  customerImage: string;
-  /** `design_link` — editable. */
-  designLink: string;
-  /** `mockup_link` — editable. */
-  mockupLink: string;
-  /** `tracking` — chỉ đọc ở form nhanh, editable trong popup toàn bộ field. */
-  tracking: MeraTracking;
-  /** `image_link` — thumbnail, chỉ đọc. */
+  /** `note` (field_key `item_note`) — Item Note → `order_items.note`. Cũng có trong `values["item_note"]`. */
+  note: string;
+  /** `image_link` — thumbnail, read-only; giữ để UI core không phụ thuộc columns. */
   imageLink: string;
-  /** `product_name` — editable (popup). */
-  productName: string;
-  /** `quantity` — editable (popup, số nguyên). */
-  quantity: number;
-  /** `price` — editable (popup, chuỗi số theo Mera). */
-  price: string;
-  /** `product_type` — editable (popup). */
-  productType: string;
-  /** `material` — editable (popup). */
-  material: string;
-  /** `fulfillment_cost` — editable (popup). */
-  fulfillmentCost: string;
-  /** `ff_name_by_day` — editable (popup). */
-  ffNameByDay: string;
   /** `version` — optimistic lock của item. */
   version: number;
+  /**
+   * Giá trị field item-scope đã resolve (key = fieldKey, vd `status`, `personalization`,
+   * `customer_image`, `tracking.code`). Server chỉ điền các fieldKey của cột item-scope đang hiển thị
+   * (+ luôn có `item_note`). Nested resolve theo dot-path (`item_note` → `item.note`).
+   */
+  values: Record<string, string>;
 }
 
 /**
- * Metadata đơn Mera (nguồn: `orders`, xem §2 order-api-v2.md).
- * Chỉ `note` là editable ở panel (order-level). `version` riêng của order.
+ * Metadata đơn Mera (nguồn: `orders`). VÒNG 2: field order-scope chở qua `values`.
+ * `projectId` để server fetch order-table-columns của đúng project.
  */
 export interface MeraOrderSummary {
   /** `order_id` (vd `DAV-3999799511`). */
   orderId: string;
+  /** `project_id` — dùng fetch cấu hình cột. Rỗng nếu Mera không trả (→ fallback default columns). */
+  projectId: string;
   /** `store`. */
   store: string;
-  /** `note` — editable (order-level). */
+  /** `note` — Order Note (order-scope). Cũng có trong `values["note"]`. */
   note: string;
   /** `is_split_items` — điều kiện PATCH item; auto-split khi cần. */
   isSplitItems: boolean;
@@ -84,6 +98,11 @@ export interface MeraOrderSummary {
   version: number;
   /** `customer.name`. */
   customerName: string;
+  /**
+   * Giá trị field order-scope đã resolve (key = fieldKey, vd `note`, `customer.name`,
+   * `pricing.total`). Server chỉ điền fieldKey của cột order-scope đang hiển thị (+ luôn có `note`).
+   */
+  values: Record<string, string>;
 }
 
 /** Lý do resolve không có kết quả (soft, để UI hiển thị thông điệp phù hợp). */
@@ -93,77 +112,54 @@ export type MeraResolveReason = "not_found" | "not_configured" | null;
  * Kết quả resolve 1 đơn trên Mera.
  * - `order === null && reason === "not_found"`: không có đơn khớp trên Mera.
  * - `reason === "not_configured"`: thiếu env MERA_* (soft, KHÔNG throw) → flow Sheet vẫn chạy.
- * - `order !== null && reason === null`: có đơn; `items` là danh sách item của đơn.
+ * - `order !== null && reason === null`: có đơn; `items` là danh sách item; `columns` là cấu hình
+ *   cột đã chuẩn hoá (fallback MERA_DEFAULT_COLUMNS khi project chưa cấu hình / rỗng).
  */
 export interface ResolveMeraOrderResponse {
   order: MeraOrderSummary | null;
   items: MeraOrderItem[];
+  /** Cột đã lọc visible + sort position + editable final. `[]` khi order === null. */
+  columns: MeraColumn[];
   reason: MeraResolveReason;
 }
 
 // ---- Update contract (POST /api/mera/update) ----
 
 /**
- * Các field item được phép sửa (camelCase). Whitelist ở service; client chỉ gửi field dirty.
- * Mọi giá trị là string (khớp draft của form); service tự ép kiểu:
- * - `quantity` → số nguyên (bỏ qua nếu parse hỏng).
- * - `trackingCode/trackingCarrier/trackingUrl` → gộp thành object `tracking` (client
- *   gửi CẢ 3 khi có 1 field tracking dirty, vì Mera thay nguyên object).
+ * Body cập nhật (UNIFIED — không còn discriminated union theo `target`).
+ * `updates` = map fieldKey → giá trị string mới, TRỘN cả item-scope lẫn order-scope; server tự
+ * tách theo scope, map fieldKey → PATCH body (item_note→note, nested `tracking.*`/`shipping.*`/
+ * `customer.*`/`pricing.*` → merge với object hiện tại fetch mới rồi gửi NGUYÊN object).
+ * - Có fieldKey item-scope → cần `itemKey` + `itemVersion` (else server 400).
+ * - Có fieldKey order-scope → cần `orderId` + `orderVersion`.
+ * Panel tách section: order-scope lưu ở cấp order (itemKey rỗng), item-scope lưu ở từng item card.
  */
-export interface MeraItemUpdates {
-  status?: string;
-  personalization?: string;
-  customerImage?: string;
-  designLink?: string;
-  mockupLink?: string;
-  productName?: string;
-  quantity?: string;
-  price?: string;
-  productType?: string;
-  material?: string;
-  trackingCode?: string;
-  trackingCarrier?: string;
-  trackingUrl?: string;
-  fulfillmentCost?: string;
-  ffNameByDay?: string;
-}
-
-/** Body cập nhật 1 item. */
-export interface MeraUpdateItemRequest {
-  target: "item";
-  itemKey: string;
-  version: number;
-  updates: MeraItemUpdates;
-}
-
-/** Body cập nhật note order-level. */
-export interface MeraUpdateOrderRequest {
-  target: "order";
+export interface MeraUpdateRequest {
+  /** fieldKey → giá trị string mới (chỉ field dirty). */
+  updates: Record<string, string>;
+  /** khoá item — bắt buộc khi `updates` có field item-scope. */
+  itemKey?: string;
+  /** optimistic lock item — bắt buộc khi có field item-scope. */
+  itemVersion?: number;
+  /** khoá order — luôn gửi (biết từ đơn đã resolve). */
   orderId: string;
-  version: number;
-  note: string;
+  /** optimistic lock order — luôn gửi. */
+  orderVersion: number;
 }
 
-/** Discriminated union body của POST /api/mera/update (backend + frontend dùng chung). */
-export type MeraUpdateRequest = MeraUpdateItemRequest | MeraUpdateOrderRequest;
-
-/** Response khi target = "item". `splitApplied` true nếu server auto-bật split trước khi PATCH. */
-export interface MeraUpdateItemResponse {
-  item: MeraOrderItem;
+/**
+ * Response POST /api/mera/update. `item`/`order` chỉ khác null khi scope tương ứng có thay đổi.
+ * `splitApplied` true nếu server auto-bật split trước khi PATCH item.
+ */
+export interface MeraUpdateResponse {
+  item: MeraOrderItem | null;
+  order: MeraOrderSummary | null;
   splitApplied?: boolean;
 }
 
-/** Response khi target = "order". */
-export interface MeraUpdateOrderResponse {
-  order: MeraOrderSummary;
-}
-
-/** Union response của POST /api/mera/update. */
-export type MeraUpdateResponse = MeraUpdateItemResponse | MeraUpdateOrderResponse;
-
 /**
- * Body lỗi 409 version_conflict — `latest` là object mới nhất (item hoặc order tuỳ target).
- * Frontend đọc `latest` để toast + refetch/remount (nhất quán pattern `expected` của Sheet).
+ * Body lỗi 409 version_conflict — `latest` là object mới nhất (item hoặc order tuỳ scope xung đột).
+ * Frontend đọc `latest` để toast + refetch/remount.
  */
 export interface MeraConflictBody {
   error: string;
@@ -171,46 +167,67 @@ export interface MeraConflictBody {
   latest: MeraOrderItem | MeraOrderSummary;
 }
 
-// ---- Hằng dùng chung UI ----
+// ---- Phân loại scope & whitelist patch (SINGLE SOURCE OF TRUTH cho server) ----
+// Server import các set này để: (1) phân loại fieldKey → scope; (2) tính editable cuối.
+// Frontend KHÔNG cần import (đã có `scope`/`editable` sẵn trong MeraColumn).
 
 /**
- * Field item được phép sửa: `key` = khoá MeraOrderItem (camelCase),
- * `label` = TÊN field khớp đúng Sheet để tái dùng `FieldInput` (switch theo label:
- * "Personalization"/"Customer Image"/"Design"/"Mockup" → textarea + preview ảnh; "Status" → StatusSelect).
+ * fieldKey thuộc ORDER-scope (đọc/ghi trên `orders`). Mọi fieldKey KHÔNG nằm ở đây coi là ITEM-scope.
+ * (Nguồn: order_table_fields.go group Order/Customer/Pricing — xem research §"Danh sách field_key".)
  */
-export const MERA_EDITABLE_ITEM_FIELDS = [
-  { key: "status", label: "Status" },
-  { key: "personalization", label: "Personalization" },
-  { key: "customerImage", label: "Customer Image" },
-  { key: "designLink", label: "Design" },
-  { key: "mockupLink", label: "Mockup" },
-] as const satisfies ReadonlyArray<{ key: keyof MeraItemUpdates; label: string }>;
+export const MERA_ORDER_SCOPE_FIELD_KEYS: readonly string[] = [
+  "order_id", "note", "channel", "store", "vat_ioss", "items_count", "export_count",
+  "etsy_account", "created_at", "order_date", "conversation_id",
+  "customer.name", "customer.email",
+  "pricing.subtotal", "pricing.discount", "pricing.total", "pricing.currency",
+];
 
 /**
- * TOÀN BỘ field item sửa được trong popup "sửa toàn bộ field" (mirror SheetRowDialog).
- * 5 field đầu trùng form nhanh (label khớp Sheet để FieldInput render đúng behavior);
- * phần còn lại là các field user-managed bổ sung của Mera (§5 order-api-v2.md).
+ * fieldKey ITEM-scope mà dora-1 PATCH được (order_items). Editable cuối = column.editable !== false
+ * AND fieldKey ∈ set này. LOẠI các field read-only/phức tạp: provider, provider_history,
+ * designer.*, source_link, item_key, items_count, product_history…
+ * `item_note` map sang body field `note`; `tracking.*`/`shipping.*` gửi nguyên object (nested merge).
  */
-export const MERA_FULL_ITEM_FIELDS = [
-  ...MERA_EDITABLE_ITEM_FIELDS,
-  { key: "productName", label: "Product Name" },
-  { key: "quantity", label: "Quantity" },
-  { key: "price", label: "Price" },
-  { key: "productType", label: "Product Type" },
-  { key: "material", label: "Material" },
-  { key: "trackingCode", label: "Tracking Code" },
-  { key: "trackingCarrier", label: "Tracking Carrier" },
-  { key: "trackingUrl", label: "Tracking URL" },
-  { key: "fulfillmentCost", label: "Fulfillment Cost" },
-  { key: "ffNameByDay", label: "FF Name By Day" },
-] as const satisfies ReadonlyArray<{ key: keyof MeraItemUpdates; label: string }>;
+export const MERA_EDITABLE_ITEM_FIELD_KEYS: readonly string[] = [
+  "status", "item_note", "personalization", "customer_image", "design_link", "mockup_link",
+  "image_link", "product_name", "quantity", "price", "product_type", "material",
+  "fulfillment_cost", "ff_name_by_day",
+  "tracking.code", "tracking.carrier", "tracking.url",
+  "shipping.name", "shipping.street", "shipping.city", "shipping.state", "shipping.zip_code", "shipping.country",
+];
 
 /**
- * FALLBACK khi chưa fetch được status từ Mera (`useMeraStatuses` ↔ GET /api/mera/statuses
- * ↔ Mera GET /api/v1/statuses). Status trên Mera là CẤU HÌNH (collection `statuses`,
- * sửa được từ UI) nên luôn ưu tiên danh sách fetch động; list này chỉ dùng khi lỗi/thiếu env
- * (khớp DefaultStatuses seed của mera-fulfill-backend).
- * `StatusSelect` prepend giá trị hiện tại nếu lạ → không mất data khi status ngoài danh sách.
+ * fieldKey ORDER-scope mà dora-1 PATCH được (orders). LOẠI read-only: order_id, created_at,
+ * order_date, conversation_id, items_count. `customer.*`/`pricing.*` gửi nguyên object (nested merge).
+ */
+export const MERA_EDITABLE_ORDER_FIELD_KEYS: readonly string[] = [
+  "note", "channel", "store", "vat_ioss", "etsy_account", "export_count",
+  "customer.name", "customer.email",
+  "pricing.subtotal", "pricing.discount", "pricing.total", "pricing.currency",
+];
+
+// ---- Fallback columns khi project chưa cấu hình (columns rỗng) ----
+
+/**
+ * Danh sách cột MẶC ĐỊNH khi `GET .../order-table-columns` trả `{"columns": []}`.
+ * Bám layout vòng 1 + trọng tâm vòng 2 (Item Note). `editable` đã là giá trị CUỐI (dora-1 hỗ trợ).
+ * Server dùng nguyên list này (không cần lọc lại) khi order.projectId rỗng hoặc columns rỗng.
+ */
+export const MERA_DEFAULT_COLUMNS: MeraColumn[] = [
+  { id: "default-status",          label: "Status",          fieldKey: "status",          scope: "item",  position: 0, visible: true, editable: true },
+  { id: "default-note",            label: "Order Note",      fieldKey: "note",            scope: "order", position: 1, visible: true, editable: true },
+  { id: "default-item_note",       label: "Item Note",       fieldKey: "item_note",       scope: "item",  position: 2, visible: true, editable: true },
+  { id: "default-personalization", label: "Personalization", fieldKey: "personalization", scope: "item",  position: 3, visible: true, editable: true },
+  { id: "default-customer_image",  label: "Customer Image",  fieldKey: "customer_image",  scope: "item",  position: 4, visible: true, editable: true },
+  { id: "default-design_link",     label: "Design",          fieldKey: "design_link",     scope: "item",  position: 5, visible: true, editable: true },
+  { id: "default-mockup_link",     label: "Mockup",          fieldKey: "mockup_link",     scope: "item",  position: 6, visible: true, editable: true },
+  { id: "default-tracking_code",   label: "Tracking",        fieldKey: "tracking.code",   scope: "item",  position: 7, visible: true, editable: false },
+];
+
+/**
+ * FALLBACK khi chưa fetch được status từ Mera (`useMeraStatuses` ↔ GET /api/mera/statuses).
+ * Status trên Mera là CẤU HÌNH (collection `statuses`) nên luôn ưu tiên list fetch động; list này
+ * chỉ dùng khi lỗi/thiếu env. `StatusSelect` prepend giá trị hiện tại nếu lạ → không mất data.
  */
 export const MERA_STATUS_OPTIONS = [
   "NEW",

@@ -2,17 +2,27 @@ import "server-only";
 
 import { asNumber, firstString, getPath } from "@/lib/services/etsy-utils";
 import { normalizeStore } from "@/lib/google/sheet-utils";
-import type {
-  MeraItemUpdates,
-  MeraOrderItem,
-  MeraOrderSummary,
-  ResolveMeraOrderResponse,
+import {
+  MERA_DEFAULT_COLUMNS,
+  MERA_EDITABLE_ITEM_FIELD_KEYS,
+  MERA_EDITABLE_ORDER_FIELD_KEYS,
+  MERA_ORDER_SCOPE_FIELD_KEYS,
+  type MeraColumn,
+  type MeraOrderItem,
+  type MeraOrderSummary,
+  type MeraUpdateRequest,
+  type MeraUpdateResponse,
+  type ResolveMeraOrderResponse,
 } from "@/lib/types/mera";
 
 /**
  * Service gọi Mera Order API (qua fulfill backend) — NƠI DUY NHẤT map snake_case → camelCase.
  * Server-only: dùng Internal API Key (không expire) + X-Actor-Email để ghi audit đúng người.
  * Xem docs/order-api-v2.md và lib/types/mera.ts (type contract).
+ *
+ * VÒNG 2: panel render field ĐỘNG theo cấu hình "Order Table Columns" của Mera admin.
+ * - `resolveMeraOrder` fetch thêm columns (per-project) + resolve `values` theo fieldKey.
+ * - `updateMeraOrder` nhận `updates: Record<fieldKey,string>` trộn 2 scope, tự tách + map PATCH body.
  */
 
 /**
@@ -39,7 +49,7 @@ function meraConfig(): { base: string; key: string } | null {
   const key = process.env.MERA_INTERNAL_API_KEY?.trim();
   if (!base || !key) return null;
   // Chuẩn hoá về DOMAIN GỐC (bỏ trailing slash + hậu tố /api/v2 nếu có) —
-  // caller tự truyền path đầy đủ "/api/v2/..." hoặc "/api/v1/..." (statuses nằm ở v1).
+  // caller tự truyền path đầy đủ "/api/v2/..." hoặc "/api/v1/..." (statuses + order-table-columns ở v1).
   const normalized = base.replace(/\/+$/, "").replace(/\/api\/v2$/, "");
   return { base: normalized, key };
 }
@@ -94,52 +104,16 @@ async function meraFetch(
   return { status: res.status, data };
 }
 
-// ---- Map snake_case (Mera JSON) → camelCase (DTO). Chỉ giữ field panel cần. ----
-
-/** Map 1 item Mera (order_items JSON) → MeraOrderItem. Parse phòng thủ vì shape không đảm bảo. */
-function mapItem(raw: unknown): MeraOrderItem {
-  return {
-    itemKey: firstString(raw, ["item_key"]),
-    orderId: firstString(raw, ["order_id"]),
-    status: firstString(raw, ["status"]),
-    personalization: firstString(raw, ["personalization"]),
-    customerImage: firstString(raw, ["customer_image"]),
-    designLink: firstString(raw, ["design_link"]),
-    mockupLink: firstString(raw, ["mockup_link"]),
-    tracking: {
-      code: firstString(raw, ["tracking.code"]),
-      carrier: firstString(raw, ["tracking.carrier"]),
-      url: firstString(raw, ["tracking.url"]),
-    },
-    imageLink: firstString(raw, ["image_link"]),
-    productName: firstString(raw, ["product_name"]),
-    quantity: asNumber(getPath(raw, "quantity")) ?? 0,
-    price: firstString(raw, ["price"]),
-    productType: firstString(raw, ["product_type"]),
-    material: firstString(raw, ["material"]),
-    fulfillmentCost: firstString(raw, ["fulfillment_cost"]),
-    ffNameByDay: firstString(raw, ["ff_name_by_day"]),
-    version: asNumber(getPath(raw, "version")) ?? 0,
-  };
-}
-
-/** Map 1 order Mera (orders JSON) → MeraOrderSummary. `customer.name` flatten. */
-function mapOrder(raw: unknown): MeraOrderSummary {
-  return {
-    orderId: firstString(raw, ["order_id"]),
-    store: firstString(raw, ["store"]),
-    note: firstString(raw, ["note"]),
-    // Chỉ true khi đúng boolean true — payload có thể trả thiếu field (→ mặc định false).
-    isSplitItems: getPath(raw, "is_split_items") === true,
-    itemsCount: asNumber(getPath(raw, "items_count")) ?? 0,
-    version: asNumber(getPath(raw, "version")) ?? 0,
-    customerName: firstString(raw, ["customer.name"]),
-  };
-}
+// ---- Helpers dùng chung ----
 
 /** Đọc mảng theo key một cách phòng thủ (payload có thể thiếu field/không phải mảng). */
 function asArray(v: unknown): unknown[] {
   return Array.isArray(v) ? v : [];
+}
+
+/** true nếu object thuần (không phải array/null) — dùng khi merge nested object trước PATCH. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 /** Thời điểm tạo (ms) để chọn đơn mới nhất; parse hỏng → 0 (đẩy xuống cuối). */
@@ -149,12 +123,196 @@ function createdAtMs(raw: unknown): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
+/**
+ * Toàn bộ field_key ITEM-scope hợp lệ (nguồn: order_table_fields.go group Item — research §"Danh sách").
+ * Dùng để LỌC field_key lạ khỏi columns (đừng render cột rác). Kết hợp MERA_ORDER_SCOPE_FIELD_KEYS
+ * cho order-scope. Set này rộng hơn whitelist patch (gồm cả field read-only như provider/source_link).
+ */
+const MERA_ITEM_FIELD_KEYS_ALL: readonly string[] = [
+  "item_key", "status", "item_note", "provider", "provider_history", "material",
+  "designer.name", "source_link", "product_name", "quantity", "personalization",
+  "image_link", "design_link", "customer_image", "mockup_link", "price", "product_type",
+  "fulfillment_cost", "ff_name_by_day",
+  "tracking.code", "tracking.carrier", "tracking.url",
+  "shipping.name", "shipping.street", "shipping.city", "shipping.state", "shipping.zip_code", "shipping.country",
+];
+
+/** field_key có nằm trong danh sách hợp lệ (order-scope hoặc item-scope)? */
+function isKnownFieldKey(fieldKey: string): boolean {
+  return MERA_ORDER_SCOPE_FIELD_KEYS.includes(fieldKey) || MERA_ITEM_FIELD_KEYS_ALL.includes(fieldKey);
+}
+
+/** Phân scope theo fieldKey: nằm trong set order-scope thì "order", còn lại "item". */
+function scopeOf(fieldKey: string): "order" | "item" {
+  return MERA_ORDER_SCOPE_FIELD_KEYS.includes(fieldKey) ? "order" : "item";
+}
+
+/**
+ * Chuyển giá trị leaf (từ getPath) về string hiển thị.
+ * - string giữ nguyên (kể cả date ISO — client tự format, tránh mất chính xác timezone).
+ * - number/boolean → String(). null/undefined/object → "".
+ */
+function stringifyLeaf(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : "";
+  if (typeof v === "boolean") return String(v);
+  return "";
+}
+
+/**
+ * Resolve giá trị 1 fieldKey trên 1 object (order hoặc item) → string hiển thị.
+ * Bắt chước getValueByPath của mera frontend:
+ * - `item_note` là alias của `item.note` (Item Note giờ ở cấp item — trọng tâm vòng 2).
+ * - `provider_history` là mảng lịch sử → join "provider - date - email" mỗi dòng.
+ * - còn lại: getPath theo dot-path (`tracking.code`, `customer.name`, `pricing.total`…).
+ */
+function resolveFieldValue(raw: unknown, fieldKey: string): string {
+  // item_note KHÔNG có path "item_note" trong payload — nó ánh xạ tới field `note` của order_items.
+  if (fieldKey === "item_note") return firstString(raw, ["note"]);
+
+  // provider_history: mảng object lịch sử đổi nhà cung cấp → gộp thành text nhiều dòng.
+  if (fieldKey === "provider_history") {
+    const rows = asArray(getPath(raw, "provider_history")).map((h) => {
+      const provider = firstString(h, ["provider", "name"]);
+      const date = firstString(h, ["date", "changed_at", "created_at", "at"]);
+      const email = firstString(h, ["email", "actor_email", "by"]);
+      return [provider, date, email].filter(Boolean).join(" - ");
+    });
+    return rows.filter(Boolean).join("\n");
+  }
+
+  return stringifyLeaf(getPath(raw, fieldKey));
+}
+
+/**
+ * Build `values: Record<fieldKey,string>` cho 1 object theo danh sách fieldKey cần hiển thị.
+ * `always` là fieldKey LUÔN kèm dù không có trong columns (note ổn định cho UI):
+ * item → "item_note"; order → "note".
+ */
+function buildValues(raw: unknown, fieldKeys: string[], always: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  const keys = new Set<string>([always, ...fieldKeys]);
+  for (const fk of keys) values[fk] = resolveFieldValue(raw, fk);
+  return values;
+}
+
+// ---- Map snake_case (Mera JSON) → camelCase (DTO). ----
+
+/**
+ * Map 1 item Mera (order_items JSON) → MeraOrderItem. Parse phòng thủ vì shape không đảm bảo.
+ * `fieldKeys` = fieldKey item-scope cần điền vào `values` (từ columns đang hiển thị). Luôn kèm `item_note`.
+ */
+function mapItem(raw: unknown, fieldKeys: string[]): MeraOrderItem {
+  return {
+    itemKey: firstString(raw, ["item_key"]),
+    orderId: firstString(raw, ["order_id"]),
+    // note = item_note → order_items.note (trọng tâm vòng 2, giữ typed cho UI core).
+    note: firstString(raw, ["note"]),
+    imageLink: firstString(raw, ["image_link"]),
+    version: asNumber(getPath(raw, "version")) ?? 0,
+    values: buildValues(raw, fieldKeys, "item_note"),
+  };
+}
+
+/**
+ * Map 1 order Mera (orders JSON) → MeraOrderSummary. `customer.name` flatten.
+ * `fieldKeys` = fieldKey order-scope cần điền vào `values`. Luôn kèm `note`.
+ * `projectId` (`project_id`) dùng fetch order-table-columns của đúng project — xác nhận field tại
+ * docs/order-api-v2.md Data Models. Nếu payload thật đổi tên → thêm alias vào firstString bên dưới.
+ */
+function mapOrder(raw: unknown, fieldKeys: string[]): MeraOrderSummary {
+  return {
+    orderId: firstString(raw, ["order_id"]),
+    // project_id: khoá fetch cấu hình cột. Rỗng → resolve fallback MERA_DEFAULT_COLUMNS.
+    projectId: firstString(raw, ["project_id", "projectId", "project.id"]),
+    store: firstString(raw, ["store"]),
+    note: firstString(raw, ["note"]),
+    // Chỉ true khi đúng boolean true — payload có thể trả thiếu field (→ mặc định false).
+    isSplitItems: getPath(raw, "is_split_items") === true,
+    itemsCount: asNumber(getPath(raw, "items_count")) ?? 0,
+    version: asNumber(getPath(raw, "version")) ?? 0,
+    customerName: firstString(raw, ["customer.name"]),
+    values: buildValues(raw, fieldKeys, "note"),
+  };
+}
+
+// ---- Cấu hình cột động (Order Table Columns) ----
+
+/**
+ * Chuẩn hoá danh sách cột từ JSON admin (snake_case) → MeraColumn[] đã sẵn sàng cho client:
+ * lọc `visible !== false`, bỏ field_key lạ, dedupe fieldKey, sort `position` tăng, và tính
+ * `editable` CUỐI = `config.editable !== false` AND fieldKey ∈ whitelist patch của scope tương ứng.
+ */
+function normalizeColumns(rawColumns: unknown): MeraColumn[] {
+  const seen = new Set<string>();
+  const cols: MeraColumn[] = [];
+
+  for (const raw of asArray(rawColumns)) {
+    const fieldKey = firstString(raw, ["field_key", "fieldKey"]);
+    if (!fieldKey) continue;
+    // Ẩn cột admin tắt hiển thị. (editable normalize nil→true ở backend nên chỉ check visible.)
+    if (getPath(raw, "visible") === false) continue;
+    // Bỏ field_key ngoài danh sách hợp lệ để không render cột rác/không resolve được.
+    if (!isKnownFieldKey(fieldKey)) continue;
+    // Dedupe: giữ cấu hình xuất hiện trước (position sẽ sort lại sau).
+    if (seen.has(fieldKey)) continue;
+    seen.add(fieldKey);
+
+    const scope = scopeOf(fieldKey);
+    const configEditable = getPath(raw, "editable") !== false;
+    const whitelist = scope === "order" ? MERA_EDITABLE_ORDER_FIELD_KEYS : MERA_EDITABLE_ITEM_FIELD_KEYS;
+    // editable cuối = admin bật AND dora-1 PATCH được field này (whitelist scope).
+    const editable = configEditable && whitelist.includes(fieldKey);
+
+    cols.push({
+      id: firstString(raw, ["id"]) || `col-${fieldKey}`,
+      label: firstString(raw, ["label"]) || fieldKey,
+      fieldKey,
+      scope,
+      position: asNumber(getPath(raw, "position")) ?? 0,
+      visible: true,
+      editable,
+    });
+  }
+
+  cols.sort((a, b) => a.position - b.position);
+  return cols;
+}
+
+/**
+ * Lấy cấu hình cột của 1 project qua fulfill proxy
+ * `GET <origin>/api/v1/projects/:projectId/order-table-columns` (Bearer INTERNAL_API_KEY).
+ * meraConfig() đã đưa base về origin (bỏ /api/v2) nên path v1 ghép thẳng là đúng (giống getMeraStatuses).
+ * KHÔNG được làm fail cả resolve: projectId rỗng / status !== 200 / columns [] / lỗi mạng → fallback
+ * MERA_DEFAULT_COLUMNS (panel vẫn chạy với layout mặc định).
+ */
+async function fetchMeraColumns(projectId: string, actorEmail: string): Promise<MeraColumn[]> {
+  // Không có project_id (Mera không trả) → dùng mặc định, khỏi gọi API.
+  if (!projectId) return MERA_DEFAULT_COLUMNS;
+
+  try {
+    const { status, data } = await meraFetch(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/order-table-columns`,
+      { actorEmail },
+    );
+    if (status !== 200) return MERA_DEFAULT_COLUMNS;
+    const cols = normalizeColumns(getPath(data, "columns"));
+    // Project chưa cấu hình → {"columns": []} → fallback mặc định.
+    return cols.length > 0 ? cols : MERA_DEFAULT_COLUMNS;
+  } catch {
+    // Lỗi/timeout khi fetch columns KHÔNG được kéo sập resolve — panel vẫn hiển thị field mặc định.
+    return MERA_DEFAULT_COLUMNS;
+  }
+}
+
 // ---- Public API ----
 
 /**
  * Tra cứu 1 đơn Mera theo receiptId (transaction Etsy). Nhánh song song với resolve Sheet.
  * - Thiếu env → reason "not_configured" (SOFT, KHÔNG throw): flow Sheet vẫn chạy bình thường.
  * - Có env: GET /orders?q=<receiptId> rồi lọc phía dora-1 vì `q` là full-text (có thể lẫn đơn khác).
+ * VÒNG 2: sau khi chọn đơn → fetch columns theo project + resolve `values` đúng cột hiển thị.
  */
 export async function resolveMeraOrder(opts: {
   storeName: string;
@@ -162,7 +320,7 @@ export async function resolveMeraOrder(opts: {
   actorEmail: string;
 }): Promise<ResolveMeraOrderResponse> {
   // Soft path: chưa cấu hình Mera → không coi là lỗi, chỉ báo lý do để UI hiển thị nhẹ.
-  if (!meraConfig()) return { order: null, items: [], reason: "not_configured" };
+  if (!meraConfig()) return { order: null, items: [], columns: [], reason: "not_configured" };
 
   const receipt = String(opts.receiptId);
   const { data } = await meraFetch(
@@ -178,7 +336,7 @@ export async function resolveMeraOrder(opts: {
     return orderId.endsWith(`-${receipt}`) || orderId === receipt;
   });
 
-  if (rawOrders.length === 0) return { order: null, items: [], reason: "not_found" };
+  if (rawOrders.length === 0) return { order: null, items: [], columns: [], reason: "not_found" };
 
   // Nhiều KQ → thu hẹp theo store (chuẩn hoá như resolve Sheet). Chỉ áp khi còn >=1 để
   // không "lọc mất" đơn khi tên store trên Mera lệch với tên gửi từ Etsy.
@@ -191,7 +349,16 @@ export async function resolveMeraOrder(opts: {
 
   // Còn nhiều → lấy đơn mới nhất theo created_at.
   const chosen = candidates.reduce((a, b) => (createdAtMs(b) > createdAtMs(a) ? b : a));
-  const order = mapOrder(chosen);
+
+  // projectId cần đọc TRƯỚC để fetch columns; mapOrder cũng đọc lại (rẻ, giữ tách bạch).
+  const projectId = firstString(chosen, ["project_id", "projectId", "project.id"]);
+  const columns = await fetchMeraColumns(projectId, opts.actorEmail);
+
+  // Tách fieldKey theo scope để chỉ resolve `values` đúng cột đang hiển thị (đừng đổ hết field).
+  const orderFieldKeys = columns.filter((c) => c.scope === "order").map((c) => c.fieldKey);
+  const itemFieldKeys = columns.filter((c) => c.scope === "item").map((c) => c.fieldKey);
+
+  const order = mapOrder(chosen, orderFieldKeys);
 
   // items lấy từ include_items; nếu rỗng (đơn cũ / API không kèm) → fallback gọi items riêng.
   let rawItems = asArray(getPath(chosen, "items"));
@@ -203,7 +370,7 @@ export async function resolveMeraOrder(opts: {
     rawItems = asArray(getPath(itemsData, "items"));
   }
 
-  return { order, items: rawItems.map(mapItem), reason: null };
+  return { order, items: rawItems.map((it) => mapItem(it, itemFieldKeys)), columns, reason: null };
 }
 
 /**
@@ -225,69 +392,102 @@ export async function getMeraStatuses(opts: { actorEmail: string }): Promise<str
   return rows.map((s) => s.name);
 }
 
+// ---- Update: map fieldKey → PATCH body (unified 2 scope) ----
+
+/** Unwrap payload có thể bọc trong {item:...}/{order:...} hoặc trả object trực tiếp. */
+function unwrap(data: unknown, wrapKey: "item" | "order"): unknown {
+  const inner = getPath(data, wrapKey);
+  return isPlainObject(inner) ? inner : data;
+}
+
 /**
- * DTO camelCase → body PATCH snake_case (chỉ field whitelist có mặt).
- * Ép kiểu tại đây: `quantity` → int (bỏ qua nếu parse hỏng);
- * `trackingCode/Carrier/Url` → gộp object `tracking` (Mera thay nguyên object,
- * client đã gửi đủ cả 3 khi có 1 field tracking dirty).
+ * Gộp 1 nested object (tracking/shipping/customer/pricing) trước PATCH: copy toàn bộ subfield
+ * hiện tại từ `current` rồi ghi đè subfield thay đổi. Mera PATCH nhận NGUYÊN object nên phải gửi
+ * đủ (nếu gửi thiếu, Mera coi như xoá subfield khác). `changes` = fieldKey→val của riêng scope này.
  */
-function itemUpdatesToBody(updates: MeraItemUpdates): Record<string, unknown> {
+function mergeNestedObject(
+  current: unknown,
+  parent: string,
+  changes: Record<string, string>,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  const base = getPath(current, parent);
+  if (isPlainObject(base)) {
+    for (const [k, v] of Object.entries(base)) result[k] = stringifyLeaf(v);
+  }
+  for (const [fk, val] of Object.entries(changes)) {
+    if (fk.startsWith(`${parent}.`)) result[fk.slice(parent.length + 1)] = val;
+  }
+  return result;
+}
+
+/**
+ * Build PATCH body cho MỘT scope (item hoặc order) từ map fieldKey→val.
+ * - `item_note` → field `note` (item-scope). Scalar khác: field name = fieldKey (đã snake_case).
+ * - Số (`quantity`/`export_count`) ép int hợp lệ, bỏ nếu parse hỏng.
+ * - Nested (`tracking.*`/`shipping.*`/`customer.*`/`pricing.*`): fetch object MỚI NHẤT rồi merge (D7).
+ * Trả body KHÔNG kèm version (caller tự thêm version của scope tương ứng).
+ */
+async function buildScopeBody(
+  fields: Record<string, string>,
+  fetchCurrent: () => Promise<unknown>,
+  actorEmail: string,
+): Promise<Record<string, unknown>> {
   const body: Record<string, unknown> = {};
-  if (updates.status !== undefined) body.status = updates.status;
-  if (updates.personalization !== undefined) body.personalization = updates.personalization;
-  if (updates.customerImage !== undefined) body.customer_image = updates.customerImage;
-  if (updates.designLink !== undefined) body.design_link = updates.designLink;
-  if (updates.mockupLink !== undefined) body.mockup_link = updates.mockupLink;
-  if (updates.productName !== undefined) body.product_name = updates.productName;
-  if (updates.price !== undefined) body.price = updates.price;
-  if (updates.productType !== undefined) body.product_type = updates.productType;
-  if (updates.material !== undefined) body.material = updates.material;
-  if (updates.fulfillmentCost !== undefined) body.fulfillment_cost = updates.fulfillmentCost;
-  if (updates.ffNameByDay !== undefined) body.ff_name_by_day = updates.ffNameByDay;
-  if (updates.quantity !== undefined) {
-    const qty = asNumber(updates.quantity);
-    if (qty !== undefined && Number.isInteger(qty) && qty > 0) body.quantity = qty;
+  const nestedParents = new Set<string>();
+  for (const fk of Object.keys(fields)) {
+    if (fk.includes(".")) nestedParents.add(fk.split(".")[0]);
   }
-  if (
-    updates.trackingCode !== undefined ||
-    updates.trackingCarrier !== undefined ||
-    updates.trackingUrl !== undefined
-  ) {
-    body.tracking = {
-      code: updates.trackingCode ?? "",
-      carrier: updates.trackingCarrier ?? "",
-      url: updates.trackingUrl ?? "",
-    };
+
+  // Chỉ fetch object hiện tại khi có field nested (tránh gọi thừa khi chỉ sửa scalar).
+  const current = nestedParents.size > 0 ? await fetchCurrent() : null;
+
+  for (const [fk, val] of Object.entries(fields)) {
+    if (fk.includes(".")) continue; // nested xử lý riêng bên dưới
+    if (fk === "item_note") {
+      body.note = val; // Item Note → order_items.note
+      continue;
+    }
+    if (fk === "quantity" || fk === "export_count") {
+      const n = asNumber(val);
+      if (n !== undefined && Number.isInteger(n) && n >= 0) body[fk] = n;
+      continue;
+    }
+    // Scalar còn lại: fieldKey chính là tên field snake_case của Mera → gán thẳng.
+    body[fk] = val;
   }
+
+  for (const parent of nestedParents) {
+    body[parent] = mergeNestedObject(current, parent, fields);
+  }
+
+  // actorEmail giữ trong closure fetchCurrent; tham số này chỉ để nhắc caller truyền đúng người.
+  void actorEmail;
   return body;
 }
 
 /**
- * Cập nhật 1 item Mera. Optimistic lock qua `version`.
- * - 400 ITEM_EDIT_REQUIRES_SPLIT → tự bật split cho order rồi retry PATCH đúng 1 lần
- *   (set splitApplied=true để UI báo "đã bật split items").
- * - 409 → throw version_conflict kèm `latest` (KHÔNG auto-merge, để UI reload).
+ * PATCH item với auto-split + retry:
+ * - 400 ITEM_EDIT_REQUIRES_SPLIT → bật split cho order rồi PATCH lại đúng 1 lần (splitApplied=true).
+ * - 200 → mapItem(res.data). 409 → throw version_conflict (latest item). Lỗi khác → throw nguyên message.
  */
-export async function updateMeraItem(opts: {
+async function patchItem(opts: {
   itemKey: string;
-  version: number;
-  updates: MeraItemUpdates;
+  orderId: string;
+  body: Record<string, unknown>;
+  itemFieldKeys: string[];
   actorEmail: string;
-}): Promise<{ item: MeraOrderItem; splitApplied?: boolean }> {
-  const body = { version: opts.version, ...itemUpdatesToBody(opts.updates) };
+}): Promise<{ item: MeraOrderItem; splitApplied: boolean }> {
   const path = `/api/v2/order-items/${encodeURIComponent(opts.itemKey)}`;
-
-  const patch = () => meraFetch(path, { method: "PATCH", body, actorEmail: opts.actorEmail });
+  const patch = () => meraFetch(path, { method: "PATCH", body: opts.body, actorEmail: opts.actorEmail });
 
   let res = await patch();
   let splitApplied = false;
 
   // Order chưa bật split & có >1 item → Mera chặn sửa item lẻ. Ta bật split rồi thử lại.
   if (res.status === 400 && firstString(res.data, ["error"]) === "ITEM_EDIT_REQUIRES_SPLIT") {
-    // order_id = item_key bỏ đoạn line_item_id cuối (order_id có thể chứa "-", vd DAV-3999799511).
-    const orderId = opts.itemKey.slice(0, opts.itemKey.lastIndexOf("-"));
-    if (orderId) {
-      await meraFetch(`/api/v2/orders/${encodeURIComponent(orderId)}/split`, {
+    if (opts.orderId) {
+      await meraFetch(`/api/v2/orders/${encodeURIComponent(opts.orderId)}/split`, {
         method: "POST",
         body: { split: true },
         actorEmail: opts.actorEmail,
@@ -298,44 +498,115 @@ export async function updateMeraItem(opts: {
   }
 
   if (res.status === 200) {
-    return splitApplied ? { item: mapItem(res.data), splitApplied: true } : { item: mapItem(res.data) };
+    return { item: mapItem(unwrap(res.data, "item"), opts.itemFieldKeys), splitApplied };
   }
   if (res.status === 409) {
     throw new MeraApiError(409, "version_conflict", {
       message: "Item đã bị sửa bởi người khác",
-      latest: mapItem(getPath(res.data, "latest")),
+      latest: mapItem(getPath(res.data, "latest"), opts.itemFieldKeys),
     });
   }
-  // Lỗi khác: dùng message từ Mera nếu có để dễ chẩn đoán.
   throw new MeraApiError(res.status, undefined, {
     message: firstString(res.data, ["message", "error"]) || `Mera trả ${res.status}`,
   });
 }
 
 /**
- * Cập nhật note order-level. Optimistic lock qua `version`.
- * 409 → version_conflict kèm `latest` (order mới nhất).
+ * PATCH order. 200 → mapOrder. 409 → version_conflict (latest order). Lỗi khác → throw message.
  */
-export async function updateMeraOrderNote(opts: {
+async function patchOrder(opts: {
   orderId: string;
-  version: number;
-  note: string;
+  body: Record<string, unknown>;
+  orderFieldKeys: string[];
   actorEmail: string;
 }): Promise<{ order: MeraOrderSummary }> {
   const res = await meraFetch(`/api/v2/orders/${encodeURIComponent(opts.orderId)}`, {
     method: "PATCH",
-    body: { version: opts.version, note: opts.note },
+    body: opts.body,
     actorEmail: opts.actorEmail,
   });
 
-  if (res.status === 200) return { order: mapOrder(res.data) };
+  if (res.status === 200) return { order: mapOrder(unwrap(res.data, "order"), opts.orderFieldKeys) };
   if (res.status === 409) {
     throw new MeraApiError(409, "version_conflict", {
       message: "Đơn đã bị sửa bởi người khác",
-      latest: mapOrder(getPath(res.data, "latest")),
+      latest: mapOrder(getPath(res.data, "latest"), opts.orderFieldKeys),
     });
   }
   throw new MeraApiError(res.status, undefined, {
     message: firstString(res.data, ["message", "error"]) || `Mera trả ${res.status}`,
   });
+}
+
+/**
+ * Cập nhật đơn Mera theo fieldKey (unified 2 scope). Tách `updates` thành item-scope/order-scope,
+ * map fieldKey → PATCH body, gọi PATCH tương ứng. Trả `{ item, order, splitApplied }` — scope không
+ * đổi = null. 409 ở scope nào → throw version_conflict với latest đúng loại scope đó.
+ */
+export async function updateMeraOrder(
+  opts: MeraUpdateRequest & { actorEmail: string },
+): Promise<MeraUpdateResponse> {
+  const updates = opts.updates ?? {};
+  const itemFields: Record<string, string> = {};
+  const orderFields: Record<string, string> = {};
+  for (const [fk, val] of Object.entries(updates)) {
+    if (scopeOf(fk) === "order") orderFields[fk] = val;
+    else itemFields[fk] = val;
+  }
+
+  const hasItem = Object.keys(itemFields).length > 0;
+  const hasOrder = Object.keys(orderFields).length > 0;
+  if (!hasItem && !hasOrder) {
+    throw new MeraApiError(400, undefined, { message: "updates rỗng" });
+  }
+
+  let item: MeraOrderItem | null = null;
+  let order: MeraOrderSummary | null = null;
+  let splitApplied = false;
+
+  // ---- Item-scope ----
+  if (hasItem) {
+    if (!opts.itemKey || typeof opts.itemVersion !== "number") {
+      throw new MeraApiError(400, undefined, { message: "thiếu itemKey/itemVersion cho field item-scope" });
+    }
+    const itemKey = opts.itemKey;
+    const itemVersion = opts.itemVersion;
+    // fieldKeys resolve về values của item trả về = các field vừa sửa (+ item_note luôn kèm).
+    const itemFieldKeys = Object.keys(itemFields);
+    const body = {
+      version: itemVersion,
+      ...(await buildScopeBody(
+        itemFields,
+        // Fetch item MỚI NHẤT để merge nested (tracking/shipping) trước PATCH.
+        () => meraFetch(`/api/v2/order-items/${encodeURIComponent(itemKey)}`, { actorEmail: opts.actorEmail }).then((r) => unwrap(r.data, "item")),
+        opts.actorEmail,
+      )),
+    };
+    const r = await patchItem({ itemKey, orderId: opts.orderId, body, itemFieldKeys, actorEmail: opts.actorEmail });
+    item = r.item;
+    splitApplied = r.splitApplied;
+  }
+
+  // ---- Order-scope ----
+  if (hasOrder) {
+    if (!opts.orderId || typeof opts.orderVersion !== "number") {
+      throw new MeraApiError(400, undefined, { message: "thiếu orderId/orderVersion cho field order-scope" });
+    }
+    const orderId = opts.orderId;
+    const orderVersion = opts.orderVersion;
+    const orderFieldKeys = Object.keys(orderFields);
+    const body = {
+      version: orderVersion,
+      ...(await buildScopeBody(
+        orderFields,
+        // Fetch order MỚI NHẤT để merge nested (customer/pricing) trước PATCH.
+        () => meraFetch(`/api/v2/orders/${encodeURIComponent(orderId)}`, { actorEmail: opts.actorEmail }).then((r) => unwrap(r.data, "order")),
+        opts.actorEmail,
+      )),
+    };
+    const r = await patchOrder({ orderId, body, orderFieldKeys, actorEmail: opts.actorEmail });
+    order = r.order;
+  }
+
+  return { item, order, splitApplied };
 }

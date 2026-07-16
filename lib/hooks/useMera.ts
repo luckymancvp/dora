@@ -3,10 +3,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { jsonFetch } from "@/lib/hooks/useSheets";
 import type {
-  MeraUpdateItemRequest,
-  MeraUpdateItemResponse,
-  MeraUpdateOrderRequest,
-  MeraUpdateOrderResponse,
+  MeraUpdateRequest,
+  MeraUpdateResponse,
   ResolveMeraOrderResponse,
 } from "@/lib/types/mera";
 
@@ -44,29 +42,16 @@ export function useMeraStatuses(enabled = true) {
   });
 }
 
-// ---- Cập nhật 1 item Mera (write-back) ----
-export function useUpdateMeraItem() {
+// ---- Cập nhật Mera (write-back UNIFIED — vòng 2) ----
+// Gộp useUpdateMeraItem + useUpdateMeraNote thành 1 hook: body MeraUpdateRequest
+// (updates: Record<fieldKey,value> trộn cả item-scope lẫn order-scope), server tự tách scope.
+// Cast MeraUpdateResponse ({item|null, order|null, splitApplied?}). invalidate ["mera-order"]
+// để remount editor với version mới sau khi lưu.
+export function useUpdateMera() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: MeraUpdateItemRequest) =>
-      jsonFetch<MeraUpdateItemResponse>("/api/mera/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-    onSuccess: () => {
-      // Kéo lại đơn để remount editor với version mới.
-      qc.invalidateQueries({ queryKey: ["mera-order"] });
-    },
-  });
-}
-
-// ---- Cập nhật note order-level ----
-export function useUpdateMeraNote() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: MeraUpdateOrderRequest) =>
-      jsonFetch<MeraUpdateOrderResponse>("/api/mera/update", {
+    mutationFn: (body: MeraUpdateRequest) =>
+      jsonFetch<MeraUpdateResponse>("/api/mera/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
