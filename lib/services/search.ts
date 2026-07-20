@@ -1,4 +1,4 @@
-import { getMessagesCollection } from "@/lib/db/collections";
+import { getEtsyOrdersCollection, getMessagesCollection } from "@/lib/db/collections";
 
 /**
  * Tìm kiếm hội thoại theo: tên khách, nội dung tin nhắn, hoặc số đơn hàng.
@@ -66,6 +66,43 @@ async function findConversationIdsByMessageText(textSearch: string): Promise<num
 }
 
 /**
+ * buyer_id của các đơn khớp order_id / transaction_id trong etsy_orders.
+ * Cần cho guest buyer: conversation của họ có receipt_history RỖNG nên 2 clause
+ * receipt_id/order_info không khớp — phải join ngược qua buyer_id
+ * (cùng khóa với order-conversation.ts / conversation-detail.ts).
+ */
+async function findBuyerIdsByOrderIds(orderIds: number[]): Promise<number[]> {
+  if (orderIds.length === 0) return [];
+  try {
+    const coll = await getEtsyOrdersCollection();
+    const docs = await coll
+      .find(
+        {
+          $or: [
+            { "data.order_id": { $in: orderIds } },
+            { "data.transactions.transaction_id": { $in: orderIds } },
+          ],
+        },
+        { projection: { "data.buyer_id": 1, "data.buyer.buyer_id": 1, _id: 0 } },
+      )
+      .limit(20)
+      .toArray();
+    const ids = new Set<number>();
+    for (const d of docs) {
+      const data = (d as { data?: { buyer_id?: unknown; buyer?: { buyer_id?: unknown } } }).data;
+      for (const v of [data?.buyer_id, data?.buyer?.buyer_id]) {
+        if (typeof v === "number" && Number.isFinite(v) && v > 0) ids.add(v);
+      }
+    }
+    return [...ids];
+  } catch (err) {
+    // Hỏng thì search vẫn chạy với các clause còn lại — không chặn.
+    console.error("[search] findBuyerIdsByOrderIds failed:", err);
+    return [];
+  }
+}
+
+/**
  * Dựng 1 clause $or cho filter conversations từ chuỗi tìm kiếm.
  * Trả null nếu chuỗi rỗng (không lọc).
  */
@@ -76,7 +113,10 @@ export async function buildSearchClause(
   if (!q) return null;
 
   const parsed = parseSearchQuery(q);
-  const msgConvIds = await findConversationIdsByMessageText(parsed.textSearch);
+  const [msgConvIds, buyerIds] = await Promise.all([
+    findConversationIdsByMessageText(parsed.textSearch),
+    parsed.mode === "order" ? findBuyerIdsByOrderIds(parsed.orderIds) : Promise.resolve([]),
+  ]);
 
   const or: Record<string, unknown>[] = [];
 
@@ -86,6 +126,10 @@ export async function buildSearchClause(
         "etsy.buyer_info.receipt_history.receipt_id": { $in: parsed.orderIds },
       });
       or.push({ "etsy.order_info.order_id": { $in: parsed.orderIds } });
+    }
+    // Guest buyer: khớp qua buyer_id của đơn trong etsy_orders.
+    if (buyerIds.length > 0) {
+      or.push({ "etsy.other_user.user_id": { $in: buyerIds } });
     }
   } else {
     const rx = { $regex: q, $options: "i" };
