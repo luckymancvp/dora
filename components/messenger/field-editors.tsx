@@ -366,9 +366,9 @@ export function FieldInput({
   );
 }
 
-// ---- Renderer field ĐỘNG cho panel Mera (vòng 2) ----
-// Panel Mera không còn field cứng theo TÊN Sheet; server trả columns có `fieldKey`.
-// Chọn kiểu editor theo fieldKey (không theo label) để tái dùng các component con ở trên.
+// ---- Renderer field ĐỘNG cho panel Mera (HIỆN KHÔNG DÙNG) ----
+// Panel Mera đã quay về form CỐ ĐỊNH như Sheet (MERA_FORM_FIELDS + FieldInput).
+// Giữ lại renderer động phòng khi cần render theo cấu hình cột admin trở lại.
 
 /** Kiểu editor suy ra từ fieldKey của cột Mera. */
 export type MeraFieldKind = "status" | "customer_image" | "drive_link" | "textarea" | "link" | "text";

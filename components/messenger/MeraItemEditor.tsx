@@ -10,12 +10,12 @@ import {
 } from "@/lib/hooks/useMera";
 import { ApiError } from "@/lib/hooks/useSheets";
 import {
+  MERA_FORM_FIELDS,
   MERA_STATUS_OPTIONS,
-  type MeraColumn,
   type MeraOrderItem,
   type MeraOrderSummary,
 } from "@/lib/types/mera";
-import { CopyCode, MeraFieldRenderer } from "@/components/messenger/field-editors";
+import { CopyCode, FieldInput } from "@/components/messenger/field-editors";
 
 /** Thông báo lỗi lưu Mera (toast) — tách riêng version_conflict để refetch/remount. */
 function meraSaveError(e: unknown, onConflict: () => void) {
@@ -36,155 +36,40 @@ function meraSaveError(e: unknown, onConflict: () => void) {
 }
 
 /**
- * Lưới field động: render mỗi cột bằng MeraFieldRenderer (chọn editor theo fieldKey).
- * Đọc value từ `values[fieldKey]`; server đã tính `editable` → client render "câm".
- */
-function MeraFieldsGrid({
-  columns,
-  draft,
-  setDraft,
-  statusOptions,
-}: {
-  columns: MeraColumn[];
-  draft: Record<string, string>;
-  setDraft: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  statusOptions: string[];
-}) {
-  return (
-    <div className="mt-2 flex flex-col gap-2.5">
-      {columns.map((col) => (
-        <label key={col.fieldKey} className="block">
-          <span className="mb-1 block text-xs font-semibold text-foreground">{col.label}</span>
-          <MeraFieldRenderer
-            fieldKey={col.fieldKey}
-            value={draft[col.fieldKey] ?? ""}
-            onChange={(v) => setDraft((d) => ({ ...d, [col.fieldKey]: v }))}
-            editable={col.editable}
-            statusOptions={statusOptions}
-          />
-        </label>
-      ))}
-    </div>
-  );
-}
-
-/** Nút Lưu + đếm số field chưa lưu (dùng chung cho order-scope & item-scope). */
-function SaveBar({
-  dirtyCount,
-  pending,
-  onSave,
-}: {
-  dirtyCount: number;
-  pending: boolean;
-  onSave: () => void;
-}) {
-  return (
-    <div className="mt-2.5 flex items-center gap-2">
-      <button
-        onClick={onSave}
-        disabled={pending || dirtyCount === 0}
-        className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary/90 disabled:bg-input-strong"
-      >
-        {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-        Lưu
-      </button>
-      {dirtyCount > 0 ? (
-        <span className="text-xs text-muted-foreground">{dirtyCount} thay đổi chưa lưu</span>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * Section ORDER-scope: render 1 LẦN ở đầu panel (trên list item).
- * Đọc `order.values[fieldKey]`; lưu qua 1 request `{ updates, orderId, orderVersion }` (itemKey rỗng).
- */
-function MeraOrderScopeSection({
-  order,
-  columns,
-  statusOptions,
-  onSaved,
-}: {
-  order: MeraOrderSummary;
-  columns: MeraColumn[];
-  statusOptions: string[];
-  onSaved: () => void;
-}) {
-  const [draft, setDraft] = useState<Record<string, string>>(() =>
-    Object.fromEntries(columns.map((c) => [c.fieldKey, order.values[c.fieldKey] ?? ""])),
-  );
-  const update = useUpdateMera();
-
-  const dirty = columns.filter(
-    (c) => c.editable && (draft[c.fieldKey] ?? "") !== (order.values[c.fieldKey] ?? ""),
-  );
-
-  const onSave = async () => {
-    if (dirty.length === 0) return;
-    const updates = Object.fromEntries(dirty.map((c) => [c.fieldKey, draft[c.fieldKey] ?? ""]));
-    try {
-      await update.mutateAsync({
-        updates,
-        orderId: order.orderId,
-        orderVersion: order.version,
-      });
-      toast.success(`Cập nhật Mera (đơn) thành công (${dirty.length} trường)`);
-      onSaved();
-    } catch (e) {
-      meraSaveError(e, onSaved);
-    }
-  };
-
-  return (
-    <div className="rounded-lg border border-border bg-secondary/40 p-2.5">
-      <div className="flex items-center gap-2">
-        <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
-          Đơn
-        </span>
-        <span className="text-xs text-muted-foreground">Field cấp đơn hàng</span>
-      </div>
-      <MeraFieldsGrid
-        columns={columns}
-        draft={draft}
-        setDraft={setDraft}
-        statusOptions={statusOptions}
-      />
-      <SaveBar dirtyCount={dirty.length} pending={update.isPending} onSave={onSave} />
-    </div>
-  );
-}
-
-/**
- * 1 item Mera khớp đơn — render ĐỘNG theo `itemColumns`.
- * Đọc `item.values[fieldKey]`; save gom field item-scope dirty →
- * `{ updates, itemKey, itemVersion, orderId, orderVersion }`.
+ * 1 item Mera khớp đơn — form CỐ ĐỊNH như panel Sheet (MERA_FORM_FIELDS, label trùng tên
+ * field Sheet để FieldInput giữ nguyên behavior). "Order Note" ghi vào `order_items.note`
+ * (fieldKey `item_note`). Tracking chỉ đọc.
  */
 function MeraItemMatchEditor({
   item,
   order,
-  columns,
   statusOptions,
   onSaved,
 }: {
   item: MeraOrderItem;
   order: MeraOrderSummary;
-  columns: MeraColumn[];
   statusOptions: string[];
   onSaved: () => void;
 }) {
   const [draft, setDraft] = useState<Record<string, string>>(() =>
-    Object.fromEntries(columns.map((c) => [c.fieldKey, item.values[c.fieldKey] ?? ""])),
+    Object.fromEntries(MERA_FORM_FIELDS.map((f) => [f.fieldKey, item.values[f.fieldKey] ?? ""])),
   );
   const [open, setOpen] = useState(true);
   const update = useUpdateMera();
 
-  const dirty = columns.filter(
-    (c) => c.editable && (draft[c.fieldKey] ?? "") !== (item.values[c.fieldKey] ?? ""),
+  // Tracking (chỉ đọc) — hiện khi Mera có dữ liệu, trống thì ẩn.
+  const trackingCode = (item.values["tracking.code"] ?? "").trim();
+  const trackingUrl = (item.values["tracking.url"] ?? "").trim();
+
+  const dirtyFields = MERA_FORM_FIELDS.filter(
+    (f) => (draft[f.fieldKey] ?? "") !== (item.values[f.fieldKey] ?? ""),
   );
 
-  const onSave = async () => {
-    if (dirty.length === 0) return;
-    const updates = Object.fromEntries(dirty.map((c) => [c.fieldKey, draft[c.fieldKey] ?? ""]));
+  const save = async () => {
+    if (dirtyFields.length === 0) return;
+    const updates = Object.fromEntries(
+      dirtyFields.map((f) => [f.fieldKey, draft[f.fieldKey] ?? ""]),
+    );
     try {
       const res = await update.mutateAsync({
         updates,
@@ -194,7 +79,7 @@ function MeraItemMatchEditor({
         orderVersion: order.version,
       });
       toast.success(
-        `Cập nhật Mera thành công (${dirty.length} trường)` +
+        `Cập nhật Mera thành công (${dirtyFields.length} trường)` +
           (res.splitApplied ? " · đã bật split items trên Mera" : ""),
       );
       onSaved();
@@ -216,27 +101,69 @@ function MeraItemMatchEditor({
           <ChevronDown className={"h-3.5 w-3.5 transition-transform " + (open ? "" : "-rotate-90")} />
         </button>
         <CopyCode value={item.itemKey} className="flex-1 break-all text-xs font-bold text-foreground" />
-        {!open && dirty.length > 0 ? (
+        {!open && dirtyFields.length > 0 ? (
           <span className="shrink-0 text-[11px] text-warning-foreground">• chưa lưu</span>
         ) : null}
       </div>
 
       {open ? (
         <>
-          <MeraFieldsGrid
-            columns={columns}
-            draft={draft}
-            setDraft={setDraft}
-            statusOptions={statusOptions}
-          />
-          <SaveBar dirtyCount={dirty.length} pending={update.isPending} onSave={onSave} />
+          {trackingCode || trackingUrl ? (
+            <div className="mt-2 flex items-start gap-1.5 text-xs">
+              <span className="shrink-0 font-semibold text-foreground">Tracking:</span>
+              {trackingUrl ? (
+                <a
+                  href={trackingUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="break-all text-primary hover:underline"
+                >
+                  {trackingCode || trackingUrl}
+                </a>
+              ) : (
+                <CopyCode value={trackingCode} className="break-all text-muted-foreground" />
+              )}
+            </div>
+          ) : null}
+
+          <div className="mt-2 flex flex-col gap-2.5">
+            {MERA_FORM_FIELDS.map((f) => (
+              <label key={f.fieldKey} className="block">
+                <span className="mb-1 block text-xs font-semibold text-foreground">{f.label}</span>
+                <FieldInput
+                  field={f.label}
+                  value={draft[f.fieldKey] ?? ""}
+                  onChange={(v) => setDraft((d) => ({ ...d, [f.fieldKey]: v }))}
+                  statusOptions={statusOptions}
+                />
+              </label>
+            ))}
+          </div>
+
+          <div className="mt-2.5 flex items-center gap-2">
+            <button
+              onClick={save}
+              disabled={update.isPending || dirtyFields.length === 0}
+              className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary/90 disabled:bg-input-strong"
+            >
+              {update.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
+              )}
+              Lưu
+            </button>
+            {dirtyFields.length > 0 ? (
+              <span className="text-xs text-muted-foreground">{dirtyFields.length} thay đổi chưa lưu</span>
+            ) : null}
+          </div>
         </>
       ) : null}
     </div>
   );
 }
 
-/** Card cập nhật Mera cho 1 ĐƠN (receipt) — render động theo columns từ cấu hình admin. */
+/** Card cập nhật Mera cho 1 ĐƠN (receipt) — liệt kê tất cả item của đơn, form như panel Sheet. */
 export function MeraReceiptEditor({
   store,
   receiptId,
@@ -249,12 +176,7 @@ export function MeraReceiptEditor({
   const resolve = useResolveMeraOrder({ store, receiptId, enabled: open });
   const order = resolve.data?.order ?? null;
   const items = resolve.data?.items ?? [];
-  const columns = resolve.data?.columns ?? [];
   const reason = resolve.data?.reason ?? null;
-
-  // Tách cột theo scope (server đã set scope trong MeraColumn).
-  const orderColumns = columns.filter((c) => c.scope === "order");
-  const itemColumns = columns.filter((c) => c.scope === "item");
 
   // Status là CẤU HÌNH trên Mera (sửa được từ UI Mera) → fetch động, fallback hardcode.
   const statusesQuery = useMeraStatuses(open);
@@ -314,24 +236,12 @@ export function MeraReceiptEditor({
             </p>
           ) : (
             <div className="flex flex-col gap-2">
-              {/* Section order-scope: chỉ hiện khi có cột order-scope. Remount theo order.version. */}
-              {orderColumns.length > 0 ? (
-                <MeraOrderScopeSection
-                  key={`order-${order.version}`}
-                  order={order}
-                  columns={orderColumns}
-                  statusOptions={statusOptions}
-                  onSaved={() => resolve.refetch()}
-                />
-              ) : null}
-
               {items.map((it) => (
-                // key gồm version item + version order → remount fill dữ liệu mới sau khi lưu/conflict.
+                // key gồm version item → remount fill dữ liệu mới sau khi lưu/conflict.
                 <MeraItemMatchEditor
-                  key={`${it.itemKey}-${it.version}-${order.version}`}
+                  key={`${it.itemKey}-${it.version}`}
                   item={it}
                   order={order}
-                  columns={itemColumns}
                   statusOptions={statusOptions}
                   onSaved={() => resolve.refetch()}
                 />

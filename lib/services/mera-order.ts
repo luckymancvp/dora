@@ -6,6 +6,7 @@ import {
   MERA_DEFAULT_COLUMNS,
   MERA_EDITABLE_ITEM_FIELD_KEYS,
   MERA_EDITABLE_ORDER_FIELD_KEYS,
+  MERA_FORM_ITEM_FIELD_KEYS,
   MERA_ORDER_SCOPE_FIELD_KEYS,
   type MeraColumn,
   type MeraOrderItem,
@@ -354,9 +355,15 @@ export async function resolveMeraOrder(opts: {
   const projectId = firstString(chosen, ["project_id", "projectId", "project.id"]);
   const columns = await fetchMeraColumns(projectId, opts.actorEmail);
 
-  // Tách fieldKey theo scope để chỉ resolve `values` đúng cột đang hiển thị (đừng đổ hết field).
+  // Tách fieldKey theo scope. Item-scope union với bộ field của form cố định (panel dora-1
+  // hiển thị form như Sheet) để `values` luôn đủ field bất kể cấu hình cột admin.
   const orderFieldKeys = columns.filter((c) => c.scope === "order").map((c) => c.fieldKey);
-  const itemFieldKeys = columns.filter((c) => c.scope === "item").map((c) => c.fieldKey);
+  const itemFieldKeys = [
+    ...new Set([
+      ...columns.filter((c) => c.scope === "item").map((c) => c.fieldKey),
+      ...MERA_FORM_ITEM_FIELD_KEYS,
+    ]),
+  ];
 
   const order = mapOrder(chosen, orderFieldKeys);
 
