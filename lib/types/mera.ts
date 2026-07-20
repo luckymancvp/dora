@@ -206,6 +206,34 @@ export const MERA_EDITABLE_ORDER_FIELD_KEYS: readonly string[] = [
   "pricing.subtotal", "pricing.discount", "pricing.total", "pricing.currency",
 ];
 
+// ---- Form cố định của panel Mera (giao diện như panel Sheet) ----
+
+/**
+ * Field hiển thị trong form panel Mera — CỐ ĐỊNH như form Sheet (label trùng tên field Sheet
+ * để `FieldInput` giữ nguyên behavior: Status → dropdown, Customer Image/Design/Mockup → preview,
+ * Order Note/Personalization → textarea). "Order Note" ghi vào `order_items.note` (fieldKey
+ * `item_note`) theo nghiệp vụ mới. Server luôn resolve đủ các fieldKey này vào `values`
+ * bất kể cấu hình cột admin.
+ */
+export const MERA_FORM_FIELDS: readonly { label: string; fieldKey: string }[] = [
+  { label: "Status",          fieldKey: "status" },
+  { label: "Order Note",      fieldKey: "item_note" },
+  { label: "Personalization", fieldKey: "personalization" },
+  { label: "Customer Image",  fieldKey: "customer_image" },
+  { label: "Design",          fieldKey: "design_link" },
+  { label: "Mockup",          fieldKey: "mockup_link" },
+];
+
+/**
+ * fieldKey item-scope mà server LUÔN resolve vào `item.values` (form cố định + tracking read-only),
+ * union với fieldKey từ cấu hình cột admin.
+ */
+export const MERA_FORM_ITEM_FIELD_KEYS: readonly string[] = [
+  ...MERA_FORM_FIELDS.map((f) => f.fieldKey),
+  "tracking.code",
+  "tracking.url",
+];
+
 // ---- Fallback columns khi project chưa cấu hình (columns rỗng) ----
 
 /**
