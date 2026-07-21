@@ -55,6 +55,76 @@ export interface TrackingJob {
   updated_at: Date;
 }
 
+/* ---- Lịch sử add tracking (trang /tracking → tab "Lịch sử") ----
+ *
+ * Contract CHUNG cho luồng list lịch sử job. Cả 4 tầng dùng chung các type dưới:
+ *   service (tracking.ts) trả `TrackingHistoryResponse`
+ *     → route GET /api/tracking/jobs `json()` nguyên shape đó
+ *       → hook useTrackingHistory cast `as TrackingHistoryResponse`
+ *         → component History đọc `items[].` + phân trang.
+ * Xem chi tiết 1 lượt: KHÔNG có trong list — bấm vào item gọi lại
+ * GET /api/tracking/jobs/[id] (đã có) → `SerializedJob`.
+ */
+
+/**
+ * Tóm tắt kết quả 1 job để hiển thị ở dòng lịch sử (không kèm mảng orders dài).
+ * Tất cả tính trên các đơn đã gửi add (selected = true), khớp logic summary của JobCard.
+ */
+export interface TrackingJobCounts {
+  /** Tổng số đơn trong job (orders.length) — hiển thị "N đơn". */
+  total: number;
+  /** Số đơn đã chọn để add (selected = true). */
+  selected: number;
+  /** verify === "VERIFIED". */
+  verified: number;
+  /** verify === "MISMATCH". */
+  mismatch: number;
+  /** add_status === "FAILED". */
+  failed: number;
+  /** verify === "SKIPPED" và add_status !== "FAILED" (bỏ qua xác minh). */
+  skipped: number;
+}
+
+/**
+ * 1 dòng lịch sử: bản tóm tắt 1 TrackingJob (KHÔNG kèm orders).
+ * created_at/updated_at là ISO string (đã qua JSON ở ranh giới API↔hook).
+ */
+export interface TrackingHistoryItem {
+  /** _id.toHexString() — dùng làm key list + param GET /api/tracking/jobs/[id]. */
+  id: string;
+  shop_name: string;
+  shop_id: number | null;
+  sender_email: string;
+  phase: TrackingPhase;
+  /** Lỗi PRECHECK/VERIFY nếu có (job dừng sớm) → hiển thị badge "Lỗi". */
+  error?: string;
+  counts: TrackingJobCounts;
+  /** ISO 8601 (Date.toISOString()). */
+  created_at: string;
+  updated_at: string;
+}
+
+/** Query params đọc từ URL của GET /api/tracking/jobs (list lịch sử). */
+export interface TrackingHistoryQuery {
+  /** Search khớp order_id HOẶC tracking_number trong orders[]. Rỗng = không lọc. */
+  q: string;
+  /** Lọc theo shop_name (khớp chính xác). Rỗng = tất cả shop. */
+  shop: string;
+  /** Trang 1-based. */
+  page: number;
+  /** Số item / trang. */
+  limit: number;
+}
+
+/** Phản hồi GET /api/tracking/jobs (phân trang offset/page, sort created_at desc). */
+export interface TrackingHistoryResponse {
+  items: TrackingHistoryItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
 /** Input mỗi dòng từ UI trước khi map carrier. */
 export interface TrackingOrderInput {
   order_id: string;

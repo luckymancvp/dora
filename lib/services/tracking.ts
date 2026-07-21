@@ -1,4 +1,4 @@
-import { ObjectId } from "mongodb";
+import { ObjectId, type Filter } from "mongodb";
 import { getTrackingJobsCollection } from "@/lib/db/collections";
 import {
   publishFetchShipments,
@@ -8,7 +8,11 @@ import {
 import {
   resolveCarrier,
   type ShipmentResultItem,
+  type TrackingHistoryItem,
+  type TrackingHistoryQuery,
+  type TrackingHistoryResponse,
   type TrackingJob,
+  type TrackingJobCounts,
   type TrackingJobOrder,
   type TrackingOrderInput,
 } from "@/lib/types/tracking";
@@ -62,6 +66,118 @@ async function getJobDoc(id: string): Promise<TrackingJob | null> {
 export async function getJob(id: string): Promise<SerializedJob | null> {
   const job = await getJobDoc(id);
   return job ? serializeJob(job) : null;
+}
+
+/* ---- Lịch sử add tracking (tab "Lịch sử" trang /tracking) ---- */
+
+/**
+ * Chỉ cần 3 field trong orders[] để tính counts → projection giới hạn field,
+ * tránh kéo toàn bộ block orders (existing/verified/message…) khi list.
+ */
+type OrderCountFields = Pick<TrackingJobOrder, "selected" | "verify" | "add_status">;
+
+/**
+ * Tính TrackingJobCounts từ mảng orders. Logic PHẢI khớp 1:1 với `JobCard.summary`
+ * trong app/tracking/page.tsx để số ở lịch sử == số hiển thị lúc chạy job.
+ * Khác biệt duy nhất theo contract: `total = orders.length` (page.tsx dùng sent.length
+ * cho "total" hiển thị), còn `selected` mới là số đơn đã gửi add (selected = true).
+ */
+export function summarizeJob(orders: OrderCountFields[]): TrackingJobCounts {
+  const sent = orders.filter((o) => o.selected);
+  return {
+    total: orders.length,
+    selected: sent.length,
+    verified: sent.filter((o) => o.verify === "VERIFIED").length,
+    mismatch: sent.filter((o) => o.verify === "MISMATCH").length,
+    failed: sent.filter((o) => o.add_status === "FAILED").length,
+    // SKIPPED nhưng không phải do FAILED (đã tách failed ở trên) → "bỏ qua xác minh".
+    skipped: sent.filter((o) => o.verify === "SKIPPED" && o.add_status !== "FAILED").length,
+  };
+}
+
+/** Shape doc sau projection cho list lịch sử (không kéo orders nặng). */
+interface HistoryProjection {
+  _id: ObjectId;
+  shop_name: string;
+  shop_id: number | null;
+  sender_email: string;
+  phase: TrackingJob["phase"];
+  error?: string;
+  created_at: Date;
+  updated_at: Date;
+  // Chỉ 3 field/đơn phục vụ đếm counts.
+  orders: OrderCountFields[];
+}
+
+/**
+ * List lịch sử job, phân trang offset + sort created_at desc. Không lọc theo
+ * sender_email (mọi user tra chéo được — theo contract). Search q khớp CHÍNH XÁC
+ * order_id/tracking_number trong orders[] (multikey index) — người dùng dán mã đầy đủ.
+ */
+export async function listJobHistory(
+  query: TrackingHistoryQuery,
+): Promise<TrackingHistoryResponse> {
+  // Clamp phòng thủ: page ≥ 1, limit trong [1, 100] (mặc định 20) tránh kéo cả bảng.
+  const page = Math.max(1, Math.floor(query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Math.floor(query.limit) || 20));
+  const q = (query.q ?? "").trim();
+  const shop = (query.shop ?? "").trim();
+
+  const filter: Filter<TrackingJob> = {};
+  if (q) {
+    // orders là mảng → so khớp element: match nếu BẤT KỲ đơn nào có order_id
+    // hoặc tracking_number == q. Dùng index multikey idx_orders_*.
+    filter.$or = [{ "orders.order_id": q }, { "orders.tracking_number": q }];
+  }
+  if (shop) filter.shop_name = shop;
+
+  const coll = await getTrackingJobsCollection();
+
+  // Projection: bỏ mọi field nặng của orders, chỉ giữ 3 field đếm counts.
+  const projection = {
+    shop_name: 1,
+    shop_id: 1,
+    sender_email: 1,
+    phase: 1,
+    error: 1,
+    created_at: 1,
+    updated_at: 1,
+    "orders.selected": 1,
+    "orders.verify": 1,
+    "orders.add_status": 1,
+  } as const;
+
+  // Đếm + lấy trang song song để giảm round-trip.
+  const [total, docs] = await Promise.all([
+    coll.countDocuments(filter),
+    coll
+      .find(filter, { projection })
+      .sort({ created_at: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .toArray() as Promise<HistoryProjection[]>,
+  ]);
+
+  const items: TrackingHistoryItem[] = docs.map((d) => ({
+    id: d._id.toHexString(),
+    shop_name: d.shop_name,
+    shop_id: d.shop_id ?? null,
+    sender_email: d.sender_email,
+    phase: d.phase,
+    ...(d.error ? { error: d.error } : {}),
+    counts: summarizeJob(Array.isArray(d.orders) ? d.orders : []),
+    // created_at/updated_at là Date trong DB → ISO string đúng contract (đã "qua JSON").
+    created_at: d.created_at.toISOString(),
+    updated_at: d.updated_at.toISOString(),
+  }));
+
+  return {
+    items,
+    page,
+    pageSize: limit,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
+  };
 }
 
 async function saveOrders(id: ObjectId, orders: TrackingJobOrder[], phase: TrackingJob["phase"]): Promise<void> {

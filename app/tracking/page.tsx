@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useShops } from "@/lib/hooks/useShops";
 import { MobileMenuButton } from "@/components/sidebar";
+import { HistorySection } from "@/components/tracking/HistorySection";
 import { carrierLabel } from "@/lib/types/tracking";
 
 type Precheck = "PENDING" | "CLEAR" | "EXISTS";
@@ -101,8 +102,13 @@ function missingFields(o: JobOrder): string[] {
   return missing;
 }
 
+type Tab = "add" | "history";
+
 export default function TrackingPage() {
   const { data: shops } = useShops();
+
+  // Tab đầu trang: "Add tracking" (luồng hiện có) | "Lịch sử".
+  const [tab, setTab] = useState<Tab>("add");
 
   const blockSeq = useRef(1);
   const newBlock = useCallback(
@@ -213,6 +219,34 @@ export default function TrackingPage() {
         <h1 className="text-2xl font-medium tracking-tight text-foreground">Add Tracking lên Etsy</h1>
       </div>
 
+      {/* Tab đầu trang: Add tracking | Lịch sử */}
+      <div className="mb-5 flex items-center gap-1 rounded-full bg-secondary p-1 text-sm">
+        <button
+          onClick={() => setTab("add")}
+          className={`flex-1 rounded-full px-4 py-1.5 font-medium transition-colors ${
+            tab === "add"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Add tracking
+        </button>
+        <button
+          onClick={() => setTab("history")}
+          className={`flex-1 rounded-full px-4 py-1.5 font-medium transition-colors ${
+            tab === "history"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Lịch sử
+        </button>
+      </div>
+
+      {tab === "history" && <HistorySection />}
+
+      {/* Tab add giữ mounted (hidden) để không mất job đang poll / đơn đã tick khi xem Lịch sử */}
+      <div hidden={tab !== "add"}>
       <p className="mb-4 text-sm text-muted-foreground">
         Mỗi shop một khối: chọn shop, dán danh sách đơn (mỗi dòng: <code>order_id</code>{" "}
         &nbsp;tab/phẩy&nbsp; <code>tracking</code> &nbsp;tab/phẩy&nbsp; <code>carrier</code>). Hệ thống
@@ -309,6 +343,7 @@ export default function TrackingPage() {
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }

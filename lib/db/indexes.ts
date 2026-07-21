@@ -93,9 +93,16 @@ const SHEET_ROW_INDEXES: IndexDef[] = [
 ];
 
 const TRACKING_JOB_INDEXES: IndexDef[] = [
-  // Liệt kê job gần nhất + dọn job cũ.
+  // Liệt kê job gần nhất + dọn job cũ. Cũng phục vụ sort created_at desc của list lịch sử.
   { keys: { created_at: -1 }, options: { name: "idx_created_at" } },
+  // Lọc theo shop + sort mới nhất (tab Lịch sử filter shop_name).
   { keys: { shop_name: 1, created_at: -1 }, options: { name: "idx_shop_created" } },
+  // Search q khớp chính xác trong orders[] (multikey trên array element).
+  { keys: { "orders.order_id": 1 }, options: { name: "idx_orders_order_id" } },
+  {
+    keys: { "orders.tracking_number": 1 },
+    options: { name: "idx_orders_tracking_number" },
+  },
 ];
 
 const REPLY_EXAMPLE_INDEXES: IndexDef[] = [
