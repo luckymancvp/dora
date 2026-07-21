@@ -144,43 +144,33 @@ export interface ShipmentResultItem {
 }
 
 /**
- * Carrier Etsy phổ biến (theo Meta-extension/docs/tracking-api.md).
- * id -1 = Other (kèm other_carrier).
+ * Tên bảng id CŨ (đã bỏ hẳn — id tự đoán, sai với Etsy: vd 6 tưởng Australia Post
+ * nhưng Etsy hiểu là Canada Post; 5 bị Etsy nuốt mất tracking).
+ * Chỉ để HIỂN THỊ đơn lịch sử đã lưu các id này = tên NGƯỜI DÙNG ĐÃ NHẬP lúc đó.
  */
-export const CARRIERS: { id: number; name: string; aliases?: string[] }[] = [
-  { id: 1, name: "USPS" },
-  { id: 2, name: "FedEx" },
-  { id: 3, name: "UPS" },
-  { id: 4, name: "DHL" },
-  { id: 5, name: "Canada Post" },
-  { id: 6, name: "Australia Post", aliases: ["AusPost"] },
-  { id: 7, name: "Royal Mail" },
-  { id: 8, name: "Deutsche Post", aliases: ["DHL Deutsche Post"] },
-  { id: 9, name: "La Poste" },
-  { id: 10, name: "Japan Post" },
-];
+const LEGACY_CARRIER_NAMES: Record<number, string> = {
+  1: "USPS",
+  2: "FedEx",
+  3: "UPS",
+  4: "DHL",
+  5: "Canada Post",
+  6: "Australia Post",
+  7: "Royal Mail",
+  8: "Deutsche Post",
+  9: "La Poste",
+  10: "Japan Post",
+};
 
-function norm(s: string): string {
-  return s.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-/** Tên carrier để hiển thị: known id → tên chuẩn; -1 → other_carrier (nếu có). */
+/** Tên carrier để hiển thị: -1 → other_carrier; id cũ trong lịch sử → tên đã nhập lúc đó. */
 export function carrierLabel(carrier: number, other_carrier: string): string {
   if (carrier === -1) return other_carrier.trim();
-  return CARRIERS.find((c) => c.id === carrier)?.name ?? other_carrier.trim();
+  return LEGACY_CARRIER_NAMES[carrier] ?? other_carrier.trim();
 }
 
 /**
- * Map tên carrier người dùng nhập sang { carrier, other_carrier }.
- * Khớp tên/alias known → carrier id, other_carrier rỗng.
- * Không khớp → carrier = -1, other_carrier = tên gốc (Etsy "Other").
+ * KHÔNG map tên → id nữa: Etsy nhận nguyên văn tên người dùng nhập qua
+ * other_carrier (carrier = -1). Đảm bảo cái gì nhập vào là cái đó lên Etsy.
  */
 export function resolveCarrier(input: string): { carrier: number; other_carrier: string } {
-  const n = norm(input);
-  if (!n) return { carrier: -1, other_carrier: "" };
-  for (const c of CARRIERS) {
-    if (norm(c.name) === n) return { carrier: c.id, other_carrier: "" };
-    if (c.aliases?.some((a) => norm(a) === n)) return { carrier: c.id, other_carrier: "" };
-  }
   return { carrier: -1, other_carrier: input.trim() };
 }
