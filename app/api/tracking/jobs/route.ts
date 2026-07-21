@@ -1,7 +1,35 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/auth";
-import { createJob, ShopOfflineError } from "@/lib/services/tracking";
+import { createJob, listJobHistory, ShopOfflineError } from "@/lib/services/tracking";
 import type { TrackingOrderInput } from "@/lib/types/tracking";
+
+// GET /api/tracking/jobs?q=&shop=&page=&limit=
+// Lịch sử add tracking, phân trang. Trả TrackingHistoryResponse PHẲNG
+// ({ items, page, pageSize, total, totalPages }) — KHÁC POST (bọc { job }).
+export async function GET(req: NextRequest) {
+  try {
+    const session = await auth();
+    if (!session?.user?.email) {
+      return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+    }
+
+    const sp = req.nextUrl.searchParams;
+    // parseInt phòng thủ: NaN → để service clamp về default (page 1, limit 20).
+    const page = parseInt(sp.get("page") ?? "", 10);
+    const limit = parseInt(sp.get("limit") ?? "", 10);
+    const result = await listJobHistory({
+      q: (sp.get("q") ?? "").trim(),
+      shop: (sp.get("shop") ?? "").trim(),
+      page: Number.isFinite(page) ? page : 1,
+      limit: Number.isFinite(limit) ? limit : 20,
+    });
+    return NextResponse.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("[GET /api/tracking/jobs]", message);
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
 
 // POST /api/tracking/jobs
 // body: { shopName, shopId?, orders: [{ order_id, tracking_number, carrier }] }
