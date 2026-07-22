@@ -243,3 +243,42 @@
 .chat-input-scroll::-webkit-scrollbar-thumb:hover {
   background-color: var(--muted-foreground);
 }
+
+/* Màn chúc mừng khi tin nhắn "Chưa trả lời" về 0 (AllClearCelebration). */
+@keyframes celebrate-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.8) translateY(12px);
+  }
+  55% {
+    transform: scale(1.04) translateY(0);
+  }
+  70% {
+    transform: scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+@keyframes celebrate-wiggle {
+  0%,
+  100% {
+    transform: rotate(-12deg);
+  }
+  50% {
+    transform: rotate(12deg);
+  }
+}
+.celebrate-pop {
+  animation: celebrate-pop 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.celebrate-wiggle {
+  animation: celebrate-wiggle 0.8s ease-in-out 2;
+}
+@media (prefers-reduced-motion: reduce) {
+  .celebrate-pop,
+  .celebrate-wiggle {
+    animation: none;
+  }
+}
