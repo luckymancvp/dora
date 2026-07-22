@@ -6,6 +6,7 @@ import { useMessageOverview } from "@/lib/hooks/useAnalytics";
 import type { AnalyticsFilters } from "@/lib/types/etsy";
 import { PanelCard, StatCard } from "./PanelCard";
 import { useOpenMultiple } from "./useOpenMultiple";
+import { AllClearCelebration } from "./AllClearCelebration";
 
 export function MessageOverview({ filters }: { filters: AnalyticsFilters }) {
   const { data, isPending, isError } = useMessageOverview(filters);
@@ -28,6 +29,9 @@ export function MessageOverview({ filters }: { filters: AnalyticsFilters }) {
     [shops],
   );
 
+  // Đã có dữ liệu thật (không còn ở trạng thái tải lần đầu) → cho phép ăn mừng.
+  const ready = !isPending && !isError && data != null;
+
   return (
     <PanelCard
       title="Tổng quan tin nhắn"
@@ -35,10 +39,17 @@ export function MessageOverview({ filters }: { filters: AnalyticsFilters }) {
       loading={isPending}
       className="xl:col-span-1"
     >
+      {/* Ăn mừng khi số tin chưa trả lời chuyển về 0. */}
+      <AllClearCelebration unread={totals.unread} ready={ready} />
+
       {/* 3 thẻ số liệu */}
       <div className="grid grid-cols-3 gap-3">
         <StatCard value={totals.total} label="Tổng tin" />
-        <StatCard value={totals.unread} label="Chưa trả lời" tone="danger">
+        <StatCard
+          value={totals.unread}
+          label="Chưa trả lời"
+          tone={totals.unread === 0 ? "success" : "danger"}
+        >
           {allUnread.length > 0 && (
             <button
               type="button"
