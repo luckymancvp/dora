@@ -17,6 +17,9 @@ importers:
       '@googleapis/sheets':
         specifier: ^13.0.2
         version: 13.0.2
+      '@rive-app/react-canvas':
+        specifier: ^4.29.5
+        version: 4.29.5(react@19.2.4)
       '@tanstack/react-query':
         specifier: ^5.101.0
         version: 5.101.0(react@19.2.4)
@@ -81,6 +84,9 @@ importers:
         specifier: ^1.4.0
         version: 1.4.0
     devDependencies:
+      '@rive-app/canvas-advanced-single':
+        specifier: ^2.39.0
+        version: 2.39.0
       '@tailwindcss/postcss':
         specifier: ^4.2.0
         version: 4.2.0
@@ -645,6 +651,17 @@ packages:
         optional: true
       react-redux:
         optional: true
+
+  '@rive-app/canvas-advanced-single@2.39.0':
+    resolution: {integrity: sha512-GtPiBZ8Telr0MCtkZf/jJNfFdFip7DVchnPDrYxafC76JK2iOdSc8tMKcrQc0cND2BOBRbrM+uWuBakFLrvZTg==}
+
+  '@rive-app/canvas@2.38.5':
+    resolution: {integrity: sha512-S3W6w5D9m2JWD3IKmDYfOKppyVf197QSL4OyuIBiYOvwY552Gzu5ct+6vEevLCAXKhqiY2YuZIEMTXeUGOC5xg==}
+
+  '@rive-app/react-canvas@4.29.5':
+    resolution: {integrity: sha512-QZ9ee1NhPo7sX7FzxU0WCy0kz4WbuGEHYEPEwC1pH7vZ0WBA+YhtqGssFe0WYkBvH11fCLrUDYtRxGhuxOyRPA==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0
 
   '@sec-ant/readable-stream@0.4.1':
     resolution: {integrity: sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg==}
@@ -3242,6 +3259,15 @@ snapshots:
     optionalDependencies:
       react: 19.2.4
       react-redux: 9.3.0(@types/react@19.2.14)(react@19.2.4)(redux@5.0.1)
+
+  '@rive-app/canvas-advanced-single@2.39.0': {}
+
+  '@rive-app/canvas@2.38.5': {}
+
+  '@rive-app/react-canvas@4.29.5(react@19.2.4)':
+    dependencies:
+      '@rive-app/canvas': 2.38.5
+      react: 19.2.4
 
   '@sec-ant/readable-stream@0.4.1': {}
 
