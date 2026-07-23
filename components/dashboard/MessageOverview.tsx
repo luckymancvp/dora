@@ -7,6 +7,7 @@ import type { AnalyticsFilters } from "@/lib/types/etsy";
 import { PanelCard, StatCard } from "./PanelCard";
 import { useOpenMultiple } from "./useOpenMultiple";
 import { AllClearCelebration } from "./AllClearCelebration";
+import { RiveIcon } from "@/components/RiveIcon";
 
 export function MessageOverview({ filters }: { filters: AnalyticsFilters }) {
   const { data, isPending, isError } = useMessageOverview(filters);
@@ -39,6 +40,16 @@ export function MessageOverview({ filters }: { filters: AnalyticsFilters }) {
       loading={isPending}
       className="xl:col-span-1"
     >
+      {/* Mèo chơi đùa vắt lên mép trên panel (nền trong suốt). */}
+      <div className="pointer-events-none absolute -top-23 right-6 z-10">
+        <RiveIcon
+          src="/rive/cat-playing.riv"
+          artboard="Cat playing animation"
+          animation="Cat playing animation"
+          size={140}
+        />
+      </div>
+
       {/* Ăn mừng khi số tin chưa trả lời chuyển về 0. */}
       <AllClearCelebration unread={totals.unread} ready={ready} />
 

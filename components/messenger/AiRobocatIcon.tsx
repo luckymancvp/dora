@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRive, useStateMachineInput } from "@rive-app/react-canvas";
+import { useRivePauseWhenHidden } from "@/lib/hooks/useRivePauseWhenHidden";
 
 const ARTBOARD = "Catbot";
 const STATE_MACHINE = "State Machine";
@@ -43,8 +44,12 @@ export function AiRobocatIcon({
     if (err) err.value = error;
   }, [error, err]);
 
+  // Tạm dừng vẽ khi khuất tầm nhìn / đổi tab (quan trọng khi có nhiều ô).
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  useRivePauseWhenHidden(rive, el);
+
   return (
-    <div style={{ width: size, height: size }}>
+    <div ref={setEl} style={{ width: size, height: size }}>
       <RiveComponent style={{ width: "100%", height: "100%" }} />
     </div>
   );
