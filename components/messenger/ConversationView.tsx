@@ -15,6 +15,7 @@ import { upload } from "@vercel/blob/client";
 import { Send, Info, StickyNote, Paperclip, X, Loader2, Sparkles, BookMarked, ArrowLeft, ExternalLink } from "lucide-react";
 import { TemplatePicker } from "@/components/messenger/TemplatePicker";
 import { MessageList } from "@/components/messenger/MessageList";
+import { AiRobocatIcon } from "@/components/messenger/AiRobocatIcon";
 import { useSendMessage } from "@/lib/hooks/useSendMessage";
 import { useMessages } from "@/lib/hooks/useMessages";
 import { useShops } from "@/lib/hooks/useShops";
@@ -517,17 +518,11 @@ export function ConversationView({
             aria-busy={aiLoading}
             title="Tạo gợi ý AI từ nội dung đang gõ"
             className={
-              "flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-70 " +
-              (aiOpen
-                ? "bg-info-soft text-info"
-                : "text-info hover:bg-info-soft")
+              "flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full transition-colors disabled:opacity-70 " +
+              (aiOpen ? "bg-info-soft ring-2 ring-info" : "hover:bg-info-soft")
             }
           >
-            {aiLoading ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <Sparkles className="h-5 w-5" />
-            )}
+            <AiRobocatIcon active={aiLoading} size={40} />
           </button>
           <button
             onClick={submit}
