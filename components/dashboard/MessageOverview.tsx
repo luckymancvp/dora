@@ -41,7 +41,7 @@ export function MessageOverview({ filters }: { filters: AnalyticsFilters }) {
       className="xl:col-span-1"
     >
       {/* Mèo chơi đùa vắt lên mép trên panel (nền trong suốt). */}
-      <div className="pointer-events-none absolute -top-23 right-6 z-10">
+      <div className="pointer-events-none absolute -top-22.5 right-6 z-10">
         <RiveIcon
           src="/rive/cat-playing.riv"
           artboard="Cat playing animation"
