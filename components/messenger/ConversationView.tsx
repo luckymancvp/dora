@@ -135,11 +135,13 @@ export function ConversationView({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Ctrl/Cmd + Enter → gọi gợi ý AI.
+    // Ctrl/Cmd + Enter → mở panel AI và nhảy tới ô "Định hướng cho AI".
+    // KHÔNG tạo gợi ý và KHÔNG gửi: ô chat giờ chỉ để gửi tin thật, định hướng
+    // AI gõ ở ô riêng nên không còn rủi ro lỡ Enter bắn prompt cho khách.
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       setAiOpen(true);
-      void fetchAI();
+      requestAnimationFrame(() => aiGuideRef.current?.focus());
       return;
     }
     if (e.key === "Enter" && !e.shiftKey) {
@@ -198,10 +200,14 @@ export function ConversationView({
 
   const [templateOpen, setTemplateOpen] = useState(false);
 
-  // ---- Gợi ý AI (dùng chính ô chat làm định hướng) ----
+  // ---- Gợi ý AI ----
+  // Định hướng cho AI gõ ở ô RIÊNG (aiGuide), tách khỏi ô chat (draft) để không
+  // lỡ Enter bắn prompt cho khách. Ô chat chỉ để gửi tin thật.
   const [aiOpen, setAiOpen] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState<AIResponse | null>(null);
+  const [aiGuide, setAiGuide] = useState("");
+  const aiGuideRef = useRef<HTMLInputElement>(null);
 
   // Tự động fetch gợi ý AI khi mở conversation (tắt được cho Bảng xử lý).
   useEffect(() => {
@@ -224,7 +230,7 @@ export function ConversationView({
   // kết quả nên mở lại cùng hội thoại không gọi lại. force=true (nút "Tạo lại")
   // bỏ cache để sinh mới.
   const fetchAI = async (opts?: { force?: boolean }) => {
-    const guide = draft.trim();
+    const guide = aiGuide.trim();
     const queryKey = ["ai-suggestion", conversationId, guide] as const;
     setAiLoading(true);
     try {
@@ -248,19 +254,25 @@ export function ConversationView({
     }
   };
 
-  // Nút Sparkles ở ô chat:
-  // - Không có text + panel đang mở → đóng panel (như bật/tắt).
-  // - Còn lại → "tạo gợi ý từ nội dung đang gõ": panel đang mở thì tạo lại (force),
-  //   panel đang đóng thì mở lại (dùng cache nếu cùng định hướng).
+  // Nút robocat ở ô chat = bật/tắt panel AI. Khi mở → focus luôn ô "Định hướng
+  // cho AI" để gõ ngay (gợi ý được tạo qua Enter ở ô đó hoặc nút "Tạo lại").
   const generateAi = () => {
     if (aiLoading) return;
-    const wasOpen = aiOpen;
-    if (!draft.trim() && wasOpen) {
+    if (aiOpen) {
       setAiOpen(false);
       return;
     }
     setAiOpen(true);
-    void fetchAI({ force: wasOpen });
+    requestAnimationFrame(() => aiGuideRef.current?.focus());
+  };
+
+  // Enter ở ô định hướng → tạo gợi ý (force để sinh mới theo định hướng vừa gõ).
+  // Không gửi tin, không xuống dòng.
+  const onGuideKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void fetchAI({ force: true });
+    }
   };
 
   const useSuggestion = (text: string) => {
@@ -429,6 +441,27 @@ export function ConversationView({
               ))}
             </div>
           ) : null}
+
+          {/* Ô định hướng cho AI — đặt cuối panel, ngay trên ô chat. TÁCH khỏi ô
+              chat để không lỡ Enter bắn prompt cho khách. Enter ở đây = tạo gợi
+              ý, không gửi tin. */}
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              ref={aiGuideRef}
+              value={aiGuide}
+              onChange={(e) => setAiGuide(e.target.value)}
+              onKeyDown={onGuideKeyDown}
+              placeholder="Định hướng cho AI rồi Enter (vd: cảm ơn & xin lỗi giao chậm)…"
+              className="min-w-0 flex-1 rounded-full border border-info-soft bg-card px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-info"
+            />
+            <button
+              onClick={() => fetchAI({ force: true })}
+              disabled={aiLoading}
+              className="shrink-0 rounded-full bg-info px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
+            >
+              Tạo
+            </button>
+          </div>
         </div>
       )}
 
@@ -508,15 +541,15 @@ export function ConversationView({
             onKeyDown={onKeyDown}
             onPaste={onPaste}
             rows={1}
-            placeholder="Nhập tin nhắn… (Enter gửi · Shift+Enter xuống dòng · Ctrl+Enter gợi ý AI)"
+            placeholder="Nhập tin nhắn… (Enter gửi · Shift+Enter xuống dòng · Ctrl+Enter mở định hướng AI)"
             className="chat-input-scroll max-h-32 flex-1 resize-none overflow-y-hidden rounded-2xl border-0 bg-secondary px-4 py-2.5 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           />
           <button
             onClick={generateAi}
             disabled={aiLoading}
-            aria-label={aiLoading ? "Đang tạo gợi ý AI…" : "Tạo gợi ý AI"}
+            aria-label={aiLoading ? "Đang tạo gợi ý AI…" : aiOpen ? "Đóng gợi ý AI" : "Mở gợi ý AI"}
             aria-busy={aiLoading}
-            title="Tạo gợi ý AI từ nội dung đang gõ"
+            title="Mở/đóng gợi ý AI (gõ định hướng ở ô trong panel)"
             className={
               "flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full transition-colors disabled:opacity-70 " +
               (aiOpen ? "bg-info-soft ring-2 ring-info" : "hover:bg-info-soft")
