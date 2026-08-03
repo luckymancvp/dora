@@ -1,4 +1,8 @@
 import type { AIResponse } from "@/lib/types/etsy";
+import { getSystemCacheName, invalidateSystemCache } from "@/lib/services/ai/gemini-cache";
+
+/** Model Gemini dùng chung cho generateContent + explicit cache (phải khớp nhau). */
+export const GEMINI_MODEL = "gemini-3.1-flash-lite";
 
 /**
  * Port của dora-backend/utils/chatgpt.go.
@@ -468,50 +472,84 @@ export async function callGeminiAPI(prompt: string, input: string): Promise<stri
   // không cần model lớn, đổi lấy latency thấp (đo ~2s vs ~3.8s). LƯU Ý: tên
   // "gemini-3-flash" KHÔNG tồn tại trên API (404) — chỉ có bản -preview;
   // dùng 3.1-flash-lite vì là bản ổn định, không rủi ro bị gỡ như preview.
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
-  const body = {
-    systemInstruction: { parts: [{ text: buildGeminiSystemInstruction(input) }] },
-    contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: {
-      temperature: 0.7,
-      maxOutputTokens: 2048,
-      topP: 0.95,
-      topK: 40,
-      responseMimeType: "application/json",
-      // Ép đúng cấu trúc options[{label,text}] + tag để hết lỗi thiếu field / JSON hỏng.
-      responseSchema: {
-        type: "object",
-        properties: {
-          options: {
-            type: "array",
-            minItems: 2,
-            maxItems: 2,
-            items: {
-              type: "object",
-              properties: {
-                label: { type: "string" },
-                text: { type: "string" },
-              },
-              required: ["label", "text"],
+  const systemText = buildGeminiSystemInstruction(input);
+
+  const generationConfig = {
+    temperature: 0.7,
+    maxOutputTokens: 2048,
+    topP: 0.95,
+    topK: 40,
+    responseMimeType: "application/json",
+    // Ép đúng cấu trúc options[{label,text}] + tag để hết lỗi thiếu field / JSON hỏng.
+    responseSchema: {
+      type: "object",
+      properties: {
+        options: {
+          type: "array",
+          minItems: 2,
+          maxItems: 2,
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              text: { type: "string" },
             },
+            required: ["label", "text"],
           },
-          suggested_tag: { type: "string" },
-          tag_reason: { type: "string" },
         },
-        required: ["options", "suggested_tag", "tag_reason"],
+        suggested_tag: { type: "string" },
+        tag_reason: { type: "string" },
       },
-      // Thinking nhỏ để model cân nhắc ngữ cảnh/đơn hàng trước khi trả lời.
-      // Giảm 512→256 (2026-07) vì thinking cộng thẳng vào thời gian chờ của user.
-      thinkingConfig: { thinkingBudget: 256 },
+      required: ["options", "suggested_tag", "tag_reason"],
     },
+    // Thinking nhỏ để model cân nhắc ngữ cảnh/đơn hàng trước khi trả lời.
+    // Giảm 512→256 (2026-07) vì thinking cộng thẳng vào thời gian chờ của user.
+    thinkingConfig: { thinkingBudget: 256 },
   };
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  // Explicit context caching: SI tĩnh (~3074 token) chiếm gần hết token input.
+  // Cache lại → phần này tính giá cached (~75-90% rẻ hơn), đo được qua
+  // cachedContentTokenCount. Chỉ áp cho path KHÔNG guidance (đại đa số call:
+  // auto-fetch + prefetch đều input=""); khi có guidance, SI đổi theo từng call
+  // nên gửi inline (thiểu số). Xem lý do chọn explicit trong gemini-cache.ts.
+  const cacheName = input ? null : await getSystemCacheName(apiKey, GEMINI_MODEL, systemText);
+
+  type GeminiBody = {
+    contents: { parts: { text: string }[] }[];
+    generationConfig: typeof generationConfig;
+    systemInstruction?: { parts: { text: string }[] };
+    cachedContent?: string;
+  };
+  const baseBody: GeminiBody = {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig,
+  };
+
+  const send = (usingCache: boolean) => {
+    const body: GeminiBody = { ...baseBody };
+    if (usingCache && cacheName) {
+      body.cachedContent = cacheName;
+    } else {
+      body.systemInstruction = { parts: [{ text: systemText }] };
+    }
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  };
+
+  let resp = await send(Boolean(cacheName));
+  // Cache có thể đã hết hạn/không hợp lệ giữa lúc lấy tên và lúc gọi (race gần
+  // TTL, hoặc bị xoá) → bỏ cache rồi thử lại 1 lần với SI inline, đảm bảo gợi ý
+  // không chết vì tối ưu chi phí.
+  if (!resp.ok && cacheName) {
+    invalidateSystemCache();
+    resp = await send(false);
+  }
+
   const data = (await resp.json()) as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];
     error?: { code?: number; message?: string };

@@ -7,6 +7,13 @@ import type { ConversationDetailResponse, MessageListResponse } from "@/lib/type
 import type { ResolveOrderResponse } from "@/lib/types/sheets";
 
 const WINDOW_SIZE = 15;
+// Gợi ý AI TỐN Gemini token (mỗi cái = 1 generateContent + 1 embedding), nên
+// KHÔNG prefetch cả cửa sổ 15 như messages/detail (chỉ là đọc DB rẻ). Chỉ
+// warm tab đang mở + vài tab kế — phần lớn hội thoại trong window không được
+// mở ra xem, sinh gợi ý cho chúng là đốt token vô ích. Tab active vẫn được
+// ConversationView tự fetch khi mở; đây chỉ là buffer nhìn trước. Chỉnh số này
+// để cân bằng chi phí/độ mượt khi lướt nhanh giữa các tab.
+const AI_PREFETCH_SIZE = 3;
 const DEBOUNCE_MS = 300;
 const CONCURRENCY = 5;
 const BATCH_SHEET_LIMIT = 50;
@@ -106,7 +113,10 @@ export function usePrefetchTabs() {
         }
 
         // Phase 4: AI suggestion với guidance rỗng — swallow errors, không critical.
-        await runChunked(windowIds, async (id) => {
+        // Giới hạn ở AI_PREFETCH_SIZE tab đầu (không phải cả window) vì mỗi gợi ý
+        // gọi Gemini tốn token; đây là nguồn tốn token lớn nhất của tính năng.
+        const aiIds = windowIds.slice(0, AI_PREFETCH_SIZE);
+        await runChunked(aiIds, async (id) => {
           await qc
             .prefetchQuery({
               queryKey: ["ai-suggestion", id, ""],

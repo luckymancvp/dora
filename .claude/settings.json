@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"const s=require\\('fs'\\).readFileSync\\('lib/services/ai/chatgpt.ts','utf8'\\); const m=s.match\\(/let sb = \\\\`\\([\\\\s\\\\S]*?\\)\\\\`;\\\\n\\\\n  if \\\\\\(input\\\\\\)/\\); if\\(m\\){const t=m[1]; console.log\\('system instruction chars:', t.length, '~tokens:', Math.round\\(t.length/4\\)\\);}\")",
+      "Bash(node -e \"const s=require\\('fs'\\).readFileSync\\('lib/services/ai/chatgpt.ts','utf8'\\); const a=s.indexOf\\('let sb = \\\\`'\\); const b=s.indexOf\\('\\\\`;',a\\); const t=s.slice\\(a+9,b\\); console.log\\('sysInstr chars:',t.length,'~tokens:',Math.round\\(t.length/4\\)\\);\")",
+      "WebFetch(domain:discuss.ai.google.dev)",
+      "Bash(node -e ' *)",
+      "Bash(node \"C:/Users/admin/AppData/Local/Temp/claude/d--Pamo-dora-1/de88ffbd-7c95-4ef3-8a72-8614d4d325fd/scratchpad/gemini-cache-probe.mjs\")",
+      "Bash(node \"C:/Users/admin/AppData/Local/Temp/claude/d--Pamo-dora-1/de88ffbd-7c95-4ef3-8a72-8614d4d325fd/scratchpad/gemini-cache-probe2.mjs\")",
+      "Bash(echo \"---exit:$?---\")",
+      "Bash(npx --no-install eslint lib/services/ai/chatgpt.ts lib/services/ai/gemini-cache.ts lib/hooks/usePrefetchTabs.ts)",
+      "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s\\);console.log\\('leftover caches:', \\(j.cachedContents||[]\\).length\\);}\\)\")"
+    ]
+  }
+}
