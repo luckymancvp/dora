@@ -54,7 +54,8 @@ export default function AiMetricsPage() {
   const t = data?.totals;
 
   return (
-    <div className="mx-auto max-w-4xl p-6">
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-4xl p-6">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-bold text-foreground">Hiệu quả gợi ý AI</h1>
         <div className="flex gap-1">
@@ -130,6 +131,7 @@ export default function AiMetricsPage() {
           </p>
         </>
       )}
+      </div>
     </div>
   );
 }

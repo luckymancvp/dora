@@ -66,7 +66,9 @@ async function processSyncConversation(
     {
       $set: {
         etsy: mergedEtsy,
-        user_data: userData,
+        // Chỉ ghi khi biết shop — payload thiếu user_data mà vẫn $set thì xoá mất shop
+        // đã lưu, hội thoại thành "không xác định shop" trong analytics.
+        ...(userData ? { user_data: userData } : {}),
         updated_at: now,
         lastMessageDate,
       },
@@ -135,7 +137,12 @@ export async function mergeAndSyncConversation(
   await coll.updateOne(
     filter,
     {
-      $set: { etsy: mergedEtsy, user_data: userData, updated_at: now, lastMessageDate },
+      $set: {
+        etsy: mergedEtsy,
+        ...(userData ? { user_data: userData } : {}),
+        updated_at: now,
+        lastMessageDate,
+      },
       $setOnInsert: { created_at: now, tags: [] as string[], note: "" },
     },
     { upsert: true },

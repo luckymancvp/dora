@@ -212,7 +212,8 @@ export default function TrackingPage() {
   ).length;
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-4xl px-6 py-8">
       <div className="mb-6 flex items-center gap-3">
         <MobileMenuButton className="-ml-1" />
         <Truck className="h-6 w-6 text-primary" />
@@ -343,6 +344,7 @@ export default function TrackingPage() {
           ))}
         </div>
       )}
+      </div>
       </div>
     </div>
   );

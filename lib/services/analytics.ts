@@ -164,6 +164,13 @@ async function getShopCounts(base: Filter<ConversationDoc>) {
     .toArray();
 }
 
+/** shopId cho nhóm hội thoại không quy được về shop nào (mapConversation trả 0 khi thiếu). */
+const UNKNOWN_SHOP_ID = 0;
+
+function isValidShopId(v: unknown): v is number {
+  return typeof v === "number" && v > 0;
+}
+
 /** Message Overview — tổng + breakdown theo shop + danh sách unread mỗi shop. */
 export async function getMessageOverview(opts: AnalyticsOpts): Promise<MessageOverviewResponse> {
   const base = buildBaseMatch(opts);
@@ -186,7 +193,7 @@ export async function getMessageOverview(opts: AnalyticsOpts): Promise<MessageOv
   const shopInfo = new Map(shops.map((s) => [s.userId, s]));
 
   const shopBreakdown: ShopOverviewRow[] = counts
-    .filter((r) => typeof r._id === "number" && r._id > 0)
+    .filter((r) => isValidShopId(r._id))
     .map((r) => {
       const shopId = r._id as number;
       const info = shopInfo.get(shopId);
@@ -206,6 +213,24 @@ export async function getMessageOverview(opts: AnalyticsOpts): Promise<MessageOv
       if (a.online !== b.online) return a.online ? -1 : 1;
       return b.total - a.total;
     });
+
+  // Hội thoại thiếu user_data.user_id (sync qua detail trước khi có trong list) gom thành
+  // 1 dòng thay vì bị loại: nếu bỏ đi, totals panel này lệch với panel Tag (dùng computeTotals
+  // trên toàn bộ base match) và các tin chưa trả lời trong đó không ai mở được.
+  const unknownRows = counts.filter((r) => !isValidShopId(r._id));
+  const unknownTotal = unknownRows.reduce((a, r) => a + r.total, 0);
+  if (unknownTotal > 0) {
+    const unknownUnread = unknownRows.reduce((a, r) => a + r.unread, 0);
+    shopBreakdown.push({
+      shopId: UNKNOWN_SHOP_ID,
+      shopName: "Chưa xác định shop",
+      online: false,
+      total: unknownTotal,
+      unread: unknownUnread,
+      completed: Math.max(unknownTotal - unknownUnread, 0),
+      unreadConversations: unreadByShop.get(UNKNOWN_SHOP_ID) ?? [],
+    });
+  }
 
   const totals = shopBreakdown.reduce<OverviewTotals>(
     (acc, s) => ({
