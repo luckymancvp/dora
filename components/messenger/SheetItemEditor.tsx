@@ -178,7 +178,7 @@ function MatchEditor({ match, onSaved }: { match: OrderRowMatch; onSaved: () => 
 
   return (
     <div className="rounded-lg border border-border bg-card p-2.5">
-      {/* Header item: ẩn/hiện riêng từng item + Item ID + popup + mở sheet */}
+      {/* Header item: ẩn/hiện riêng từng item + Item ID + nguồn sheet + popup + mở sheet */}
       <div className="flex items-center gap-2">
         <button
           onClick={() => setOpen((v) => !v)}
@@ -188,7 +188,19 @@ function MatchEditor({ match, onSaved }: { match: OrderRowMatch; onSaved: () => 
         >
           <ChevronDown className={"h-3.5 w-3.5 transition-transform " + (open ? "" : "-rotate-90")} />
         </button>
-        <CopyCode value={match.itemId} className="flex-1 break-all text-xs font-bold text-foreground" />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <CopyCode value={match.itemId} className="break-all text-xs font-bold text-foreground" />
+          {/* Nguồn dòng: 1 item có thể nằm ở nhiều sheet (sheet live + sheet backup) → phải biết đang sửa sheet nào. */}
+          <a
+            href={match.spreadsheetUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={`${match.spreadsheetTitle} · ${match.dataTabName} · dòng ${match.rowNumber}`}
+            className="truncate text-[10px] text-muted-foreground hover:text-primary hover:underline"
+          >
+            {match.spreadsheetTitle} · dòng {match.rowNumber}
+          </a>
+        </div>
         {!open && dirtyFields.length > 0 ? (
           <span className="shrink-0 text-[11px] text-warning-foreground">• chưa lưu</span>
         ) : null}
