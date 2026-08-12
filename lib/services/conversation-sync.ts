@@ -9,6 +9,25 @@ import {
 } from "@/lib/services/etsy-utils";
 
 /**
+ * Chọn user_data (danh tính SHOP) để ghi top-level.
+ *
+ * Etsy có lúc trả bản "rút gọn" của chính shop: shop_name = null, is_seller = false,
+ * is_frozen = true. Ghi đè bản này lên user_data tốt sẽ xoá mất tên shop → không
+ * publish Ably được (channel = shop_name) và gửi tin luôn FAILED. Vì vậy: giữ bản cũ
+ * khi bản mới cùng user_id nhưng mất shop_name.
+ */
+function pickShopUserData(incoming: EtsyRaw | null, existing: EtsyRaw | null): EtsyRaw | null {
+  if (!incoming) return existing;
+  if (!existing) return incoming;
+  const incomingName = asString(incoming["shop_name"]).trim();
+  if (incomingName) return incoming;
+  const existingName = asString(existing["shop_name"]).trim();
+  if (!existingName) return incoming;
+  const sameUser = asNumber(incoming["user_id"]) === asNumber(existing["user_id"]);
+  return sameUser ? existing : incoming;
+}
+
+/**
  * Port của dora-backend ConversationService.Sync (extension/services/conversation_service.go).
  * Trả về mảng conversation_id cần sync chi tiết message.
  */
@@ -61,14 +80,16 @@ async function processSyncConversation(
   const lastMessageDate = extractLastMessageDate(mergedEtsy);
   const now = new Date();
 
+  // Chỉ ghi khi biết shop — payload thiếu user_data mà vẫn $set thì xoá mất shop
+  // đã lưu, hội thoại thành "không xác định shop" trong analytics.
+  const shopUserData = pickShopUserData(userData, existing?.user_data ?? null);
+
   await coll.updateOne(
     filter,
     {
       $set: {
         etsy: mergedEtsy,
-        // Chỉ ghi khi biết shop — payload thiếu user_data mà vẫn $set thì xoá mất shop
-        // đã lưu, hội thoại thành "không xác định shop" trong analytics.
-        ...(userData ? { user_data: userData } : {}),
+        ...(shopUserData ? { user_data: shopUserData } : {}),
         updated_at: now,
         lastMessageDate,
       },
@@ -121,7 +142,8 @@ export async function mergeAndSyncConversation(
   if (isObject(ud)) shopId = asNumber(ud["user_id"]);
   // Lấy user_data top-level từ existing nếu detail không kèm (giữ shop cho hội thoại
   // chỉ sync qua detail — nếu thiếu, tin của shop bị hiểu nhầm là của khách).
-  const userData = isObject(ud) ? ud : existing?.user_data ?? null;
+  // pickShopUserData còn chặn bản user_data rút gọn (mất shop_name) ghi đè bản tốt.
+  const userData = pickShopUserData(isObject(ud) ? ud : null, existing?.user_data ?? null);
 
   // has_replied: mặc định false (an toàn), chỉ true khi message cuối là reply thật từ shop.
   let hasReplied = false;

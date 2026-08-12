@@ -399,6 +399,8 @@ export interface PendingMessage {
   serverId: string | null;
   text: string;
   status: "sending" | "failed";
+  /** Lý do gửi hỏng (nếu server báo): chưa xác định shop / không có browser online. */
+  reason?: "shop-unknown" | "no-browser";
 }
 
 /** Phản hồi messages có cursor (load tin cũ hơn). */
