@@ -3,12 +3,15 @@ import { getConversationsCollection, getMessagesCollection } from "@/lib/db/coll
 import type { ConversationDoc, EtsyRaw, MessageDoc, MessageStatus } from "@/lib/types/etsy";
 import { asNumber, firstNumber, firstString } from "@/lib/services/etsy-utils";
 import { publishChatMessage, publishNewMessages } from "@/lib/services/ably-publish";
+import { resolveShopNameByUserId } from "@/lib/services/shop-read";
 import { captureSentReply } from "@/lib/services/ai/learning";
 
 export interface CreatedMessage {
   id: string;
   conversationId: number;
   status: MessageStatus;
+  /** Chỉ có khi FAILED — vì sao không đẩy được tới extension. */
+  reason?: "shop-unknown" | "no-browser";
 }
 
 /**
@@ -27,12 +30,18 @@ export async function createOutgoingMessage(
 
   const conv = (await convColl.findOne(
     { "etsy.conversation_id": conversationId },
-    { projection: { "user_data": 1 } },
+    { projection: { "user_data": 1, "etsy.user_data": 1 } },
   )) as ConversationDoc | null;
   if (!conv) throw new Error("conversation not found");
 
-  const shopUserId = firstNumber(conv, ["user_data.user_id"]) ?? 0;
-  const shopName = firstString(conv, ["user_data.shop_name"]);
+  const shopUserId =
+    firstNumber(conv, ["user_data.user_id", "etsy.user_data.user_id"]) ?? 0;
+  // Etsy đôi khi trả user_data "rút gọn" (shop_name = null) cho hội thoại chỉ sync
+  // qua detail → channel Ably rỗng và tin luôn FAILED. Dò tiếp theo user_id shop.
+  let shopName = firstString(conv, ["user_data.shop_name", "etsy.user_data.shop_name"]);
+  if (!shopName && shopUserId) {
+    shopName = await resolveShopNameByUserId(shopUserId);
+  }
 
   const _id = new ObjectId();
   const now = new Date();
@@ -78,8 +87,12 @@ export async function createOutgoingMessage(
   }
 
   if (!targeted) {
+    const reason = shopName ? "no-browser" : "shop-unknown";
+    console.warn(
+      `[send] conv ${conversationId} FAILED (${reason}) shop="${shopName}" shopUserId=${shopUserId}`,
+    );
     await msgColl.updateOne({ _id }, { $set: { status: "FAILED", updated_at: new Date() } });
-    return { id: _id.toHexString(), conversationId, status: "FAILED" };
+    return { id: _id.toHexString(), conversationId, status: "FAILED", reason };
   }
 
   return { id: _id.toHexString(), conversationId, status: "NEW" };

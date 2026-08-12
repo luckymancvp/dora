@@ -50,6 +50,38 @@ export async function getShopIdNameMap(): Promise<Map<number, string>> {
   return map;
 }
 
+// Cache user_id → shop_name (TTL ngắn) cho resolveShopNameByUserId.
+const shopNameCache = new Map<number, { name: string; at: number }>();
+const SHOP_NAME_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Dò shop_name theo user_id shop từ chính collection conversations.
+ * Cần khi user_data của 1 hội thoại bị Etsy trả về bản "rút gọn" (shop_name = null,
+ * is_seller = false) — không có tên shop thì không publish Ably được (channel = shop_name).
+ */
+export async function resolveShopNameByUserId(userId: number): Promise<string> {
+  if (!userId) return "";
+  const hit = shopNameCache.get(userId);
+  if (hit && Date.now() - hit.at < SHOP_NAME_TTL_MS) return hit.name;
+
+  let name = "";
+  try {
+    const coll = await getConversationsCollection();
+    const doc = await coll.findOne(
+      {
+        "user_data.user_id": userId,
+        "user_data.shop_name": { $type: "string", $ne: "" },
+      } as Parameters<typeof coll.findOne>[0],
+      { projection: { "user_data.shop_name": 1 }, sort: { updated_at: -1 } },
+    );
+    name = firstString(doc, ["user_data.shop_name"]);
+  } catch (e) {
+    console.warn("[resolveShopNameByUserId] failed:", (e as Error)?.message);
+  }
+  if (name) shopNameCache.set(userId, { name, at: Date.now() });
+  return name;
+}
+
 export interface ShopItem {
   userId: number;
   shopName: string;

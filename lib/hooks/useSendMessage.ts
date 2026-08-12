@@ -19,9 +19,9 @@ export function useSendMessage(conversationId: number) {
     };
   }, []);
 
-  const markFailed = useCallback((localId: string) => {
+  const markFailed = useCallback((localId: string, reason?: PendingMessage["reason"]) => {
     setPending((prev) =>
-      prev.map((p) => (p.localId === localId ? { ...p, status: "failed" } : p)),
+      prev.map((p) => (p.localId === localId ? { ...p, status: "failed", reason } : p)),
     );
   }, []);
 
@@ -90,12 +90,16 @@ export function useSendMessage(conversationId: number) {
           markFailed(localId);
           return;
         }
-        const created = (await res.json()) as { id: string; status: string };
+        const created = (await res.json()) as {
+          id: string;
+          status: string;
+          reason?: PendingMessage["reason"];
+        };
         setPending((prev) =>
           prev.map((p) => (p.localId === localId ? { ...p, serverId: created.id } : p)),
         );
         if (created.status === "FAILED") {
-          markFailed(localId);
+          markFailed(localId, created.reason);
           return;
         }
         pollStatus(localId, created.id);

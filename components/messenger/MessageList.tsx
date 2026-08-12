@@ -7,6 +7,12 @@ import type { PendingMessage } from "@/lib/types/etsy";
 import { ImageLightbox, MessageBubble } from "@/components/messenger/MessageBubble";
 import { cn } from "@/lib/utils";
 
+const FAILED_LABEL: Record<string, string> = {
+  default: "Gửi thất bại",
+  "no-browser": "Gửi thất bại — shop chưa mở tab Dora",
+  "shop-unknown": "Gửi thất bại — hội thoại chưa xác định shop",
+};
+
 const PendingBubble = memo(function PendingBubble({ p }: { p: PendingMessage }) {
   return (
     <div className="flex flex-col items-end px-6 py-1">
@@ -21,7 +27,7 @@ const PendingBubble = memo(function PendingBubble({ p }: { p: PendingMessage }) 
         {p.text}
       </div>
       <span className="mt-0.5 text-[11px] text-muted-foreground">
-        {p.status === "failed" ? "Gửi thất bại" : "Đang gửi…"}
+        {p.status === "failed" ? FAILED_LABEL[p.reason ?? "default"] : "Đang gửi…"}
       </span>
     </div>
   );

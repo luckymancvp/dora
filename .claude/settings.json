@@ -10,6 +10,7 @@
       "Bash(echo \"---exit:$?---\")",
       "Bash(npx --no-install eslint lib/services/ai/chatgpt.ts lib/services/ai/gemini-cache.ts lib/hooks/usePrefetchTabs.ts)",
       "Bash(node -e \"let s='';process.stdin.on\\('data',d=>s+=d\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(s\\);console.log\\('leftover caches:', \\(j.cachedContents||[]\\).length\\);}\\)\")"
+      "Bash(node _fix-shop-user-data.mjs:*)"
     ]
   }
 }
