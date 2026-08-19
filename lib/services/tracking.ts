@@ -31,14 +31,20 @@ function normalizeCode(s: string): string {
   return s.trim().replace(/\s+/g, "").toUpperCase();
 }
 
-/** Map order_id → shipment có tracking_code (ưu tiên cái đầu tiên không rỗng). */
-function indexShipments(shipments: ShipmentResultItem[]): Map<string, ShipmentResultItem> {
-  const map = new Map<string, ShipmentResultItem>();
+/**
+ * Map order_id → TẤT CẢ shipment có tracking_code của đơn đó.
+ * Một đơn Etsy có thể có nhiều shipment (add thêm tracking mới vào đơn đã có tracking cũ),
+ * nên KHÔNG được chỉ giữ cái đầu tiên — verify sẽ so nhầm với tracking cũ → MISMATCH giả.
+ */
+function indexShipments(shipments: ShipmentResultItem[]): Map<string, ShipmentResultItem[]> {
+  const map = new Map<string, ShipmentResultItem[]>();
   for (const s of shipments) {
     const oid = String(s.order_id ?? "").trim();
     const code = String(s.tracking_code ?? "").trim();
     if (!oid || !code) continue;
-    if (!map.has(oid)) map.set(oid, s);
+    const list = map.get(oid);
+    if (list) list.push(s);
+    else map.set(oid, [s]);
   }
   return map;
 }
@@ -287,7 +293,7 @@ export async function applyShipmentsResult(
 
   if (job.phase === "PRECHECK") {
     for (const o of job.orders) {
-      const found = map.get(o.order_id);
+      const found = map.get(o.order_id)?.[0];
       if (found) {
         o.precheck = "EXISTS";
         o.existing = { code: found.tracking_code, carrier_name: found.carrier_name };
@@ -307,14 +313,18 @@ export async function applyShipmentsResult(
         if (o.verify === "PENDING") o.verify = "SKIPPED";
         continue;
       }
-      const found = map.get(o.order_id);
-      if (found && normalizeCode(found.tracking_code) === normalizeCode(o.tracking_number)) {
+      // Đơn có thể mang nhiều tracking: chỉ cần MỘT shipment khớp là add thành công.
+      const list = map.get(o.order_id) ?? [];
+      const sent = normalizeCode(o.tracking_number);
+      const hit = list.find((s) => normalizeCode(s.tracking_code) === sent);
+      if (hit) {
         o.verify = "VERIFIED";
-        o.verified = { code: found.tracking_code, carrier_name: found.carrier_name };
+        o.verified = { code: hit.tracking_code, carrier_name: hit.carrier_name };
       } else {
         o.verify = "MISMATCH";
-        if (found) o.verified = { code: found.tracking_code, carrier_name: found.carrier_name };
-        o.message = found
+        const first = list[0];
+        if (first) o.verified = { code: list.map((s) => s.tracking_code).join(", "), carrier_name: first.carrier_name };
+        o.message = first
           ? "Tracking trên Etsy khác với tracking đã gửi"
           : "Không tìm thấy tracking trên Etsy sau khi add";
       }
