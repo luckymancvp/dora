@@ -172,6 +172,21 @@ export async function mergeAndSyncConversation(
 }
 
 /**
+ * BIT duy nhất trong etsy message_flags đánh dấu tin auto-reply (away message
+ * "You've reached me outside of my normal hours") của shop.
+ *
+ * Etsy còn bật bit khác cho tin THẬT của shop — đáng chú ý là bit 128 (0x80) cho
+ * tin vừa gửi/khách chưa đọc. Điều kiện cũ `message_flags === 0` khiến mọi tin thật
+ * mang bit 128 bị coi là auto-reply → has_replied = false → hội thoại đã trả lời
+ * vẫn đếm vào "Chưa trả lời" trên dashboard.
+ */
+const ETSY_AUTO_REPLY_FLAG = 2;
+
+function isEtsyAutoReplyFlags(flags: number): boolean {
+  return (flags & ETSY_AUTO_REPLY_FLAG) !== 0;
+}
+
+/**
  * Tính lastMessageDate, đồng thời cập nhật has_replied qua callback (mirror logic Go).
  * Trả về lastMessageDate.
  */
@@ -201,7 +216,7 @@ function computeHasRepliedAndDate(
   if (isSystem || type === "system") {
     setHasReplied(false); // system message — không tính là shop reply
   } else if (senderId === shopId) {
-    setHasReplied(messageFlags === 0); // flags != 0 = auto-reply → chưa coi là reply
+    setHasReplied(!isEtsyAutoReplyFlags(messageFlags)); // chỉ auto-reply mới không tính
   } else {
     setHasReplied(false); // message từ customer
   }
