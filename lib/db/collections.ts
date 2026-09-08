@@ -1,6 +1,6 @@
 import type { Collection, Db } from "mongodb";
 import clientPromise from "@/lib/mongodb-client";
-import type { AiSuggestionEventDoc, AutoReplyDoc, ConversationDoc, EtsyOrderDoc, MessageDoc, MessageTemplateDoc, OrderTrackingDoc, PersonalizationFileDoc, ReplyExampleDoc } from "@/lib/types/etsy";
+import type { AiSuggestionEventDoc, AutoReplyDoc, ConversationDoc, EtsyOrderDoc, MessageDoc, MessageTemplateDoc, OrderConversationDoc, OrderTrackingDoc, PersonalizationFileDoc, ReplyExampleDoc } from "@/lib/types/etsy";
 import type { SheetConfigDoc, SheetRowDoc } from "@/lib/types/sheets";
 import type { OrderStatusDoc } from "@/lib/types/order-status";
 import type { TrackingJob } from "@/lib/types/tracking";
@@ -129,4 +129,15 @@ export async function getEtsyOrdersCollection(): Promise<Collection<EtsyOrderDoc
 export async function getOrderTrackingCollection(): Promise<Collection<OrderTrackingDoc>> {
   const client = await clientPromise;
   return client.db(STORES_DB_NAME).collection<OrderTrackingDoc>("order_tracking");
+}
+
+/**
+ * Collection hội thoại theo ĐƠN (DB dora-master, cạnh etsy_orders).
+ * Nguồn: extension GET mission-control/orders/convos/{orderId} → /v1/extension/order-conversations/sync.
+ * Cần riêng vì thread khách guest / khách chưa trả lời không xuất hiện trong inbox
+ * nên không bao giờ vào `conversations`.
+ */
+export async function getOrderConversationsCollection(): Promise<Collection<OrderConversationDoc>> {
+  const client = await clientPromise;
+  return client.db(STORES_DB_NAME).collection<OrderConversationDoc>("order_conversations");
 }

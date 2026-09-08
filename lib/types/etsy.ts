@@ -101,6 +101,17 @@ export interface MessageSyncBody {
   messages?: EtsyRaw[];
 }
 
+/**
+ * Body của POST /v1/extension/order-conversations/sync.
+ * `convo` là payload RAW của Etsy mission-control (orders/convos/{orderId}) — KHÔNG map
+ * ở extension vì shape chưa chốt; parse ở server để sửa được mà không phải build lại extension.
+ */
+export interface OrderConversationSyncBody {
+  shop_name?: string;
+  shop_id?: number;
+  orders?: { order_id?: number | string; convo?: unknown }[];
+}
+
 // ---- DTO gọn cho frontend (KHÔNG trả nguyên blob etsy) ----
 
 /** 1 dòng hội thoại trong sidebar. */
@@ -315,6 +326,28 @@ export interface OrderTrackingDoc {
   _id?: ObjectId;
   order_id: number;
   trackings: TrackingEntry[];
+  updated_at: Date;
+}
+
+/**
+ * Document collection `dora-master.order_conversations` — 1 doc / 1 đơn.
+ * Hội thoại LẤY TỪ TRANG ĐƠN (mission-control), khác hẳn `conversations`:
+ * thread khách guest / khách chưa trả lời KHÔNG nằm trong inbox nên vòng sync
+ * conversation không bao giờ thấy. Lưu nguyên `etsy` để parse lại được khi cần.
+ */
+export interface OrderConversationDoc {
+  _id?: ObjectId;
+  order_id: number;
+  shop_id?: number;
+  shop_name?: string;
+  /** convo_id Etsy; null khi đơn chưa có hội thoại nào. */
+  conversation_id: number | null;
+  /** Payload RAW từ Etsy (đã bóc lớp bọc `convo` nếu có). */
+  etsy: EtsyRaw;
+  /** Số tin parse được ở lần ghi gần nhất (để soi nhanh khi parser lệch shape). */
+  message_count: number;
+  fetched_at: Date;
+  created_at: Date;
   updated_at: Date;
 }
 

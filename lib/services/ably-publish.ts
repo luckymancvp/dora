@@ -32,6 +32,9 @@ export const FETCH_ORDERS_EVENT = "fetch-orders";
 // Event nhắn khách theo đơn (extension tự tạo hội thoại mới nếu chưa có).
 export const SEND_ORDER_MESSAGE_EVENT = "send-order-message";
 
+// Event yêu cầu extension GET hội thoại từ TRANG ĐƠN (thấy được cả khách guest/chưa trả lời).
+export const FETCH_ORDER_CONVO_EVENT = "fetch-order-convo";
+
 /**
  * Chọn 1 browser extension đang online trên channel của shop (presence) —
  * lấy client cuối để đảm bảo chỉ 1 client xử lý. Trả null nếu không có ai online.
@@ -189,6 +192,28 @@ export async function publishSendOrderMessage(
   if (!targetClientId) return null;
 
   await channel.publish(SEND_ORDER_MESSAGE_EVENT, { ...data, clientId: targetClientId });
+  return targetClientId;
+}
+
+/**
+ * Yêu cầu extension GET hội thoại của các đơn từ TRANG ĐƠN (event "fetch-order-convo").
+ * Khác publishFetchPersonalization ở chỗ lấy TIN NHẮN chứ không phải ảnh: đây là nguồn
+ * duy nhất thấy được thread của khách guest / khách chưa trả lời (không có trong inbox).
+ * Extension POST kết quả về /v1/extension/order-conversations/sync.
+ * Trả clientId được nhắm tới, hoặc null nếu shop không có browser online.
+ */
+export async function publishFetchOrderConvo(
+  shopName: string,
+  data: { order_ids: number[] },
+): Promise<string | null> {
+  const rest = getRest();
+  if (!rest || !shopName || data.order_ids.length === 0) return null;
+  const channel = rest.channels.get(shopName);
+
+  const targetClientId = await pickTargetClient(channel);
+  if (!targetClientId) return null;
+
+  await channel.publish(FETCH_ORDER_CONVO_EVENT, { ...data, clientId: targetClientId });
   return targetClientId;
 }
 

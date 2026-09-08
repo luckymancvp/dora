@@ -13,7 +13,15 @@ interface OrderConversation {
   buyerUsername: string;
   buyerAvatar: string;
   messages: MessageItem[];
+  /** "inbox" = có trong Messenger; "order" = chỉ có ở trang đơn; "none" = chưa có gì. */
+  source: "inbox" | "order" | "none";
+  /** unix giây lần cuối extension GET thread từ trang đơn (0 = chưa bao giờ). */
+  fetchedAt: number;
 }
+
+/** Số lần + nhịp poll sau khi nhờ extension GET thread từ trang đơn (~24s). */
+const POLL_TIMES = 8;
+const POLL_INTERVAL_MS = 3000;
 
 /** Panel nhắn khách theo đơn (trượt từ phải, non-modal) — hiện full hội thoại cũ (nếu có) trước khi gửi. */
 export function MessageBuyerDialog({
@@ -27,6 +35,9 @@ export function MessageBuyerDialog({
   const [sending, setSending] = useState(false);
   const [convo, setConvo] = useState<OrderConversation | null>(null);
   const [loadingConvo, setLoadingConvo] = useState(true);
+  // Đang nhờ extension GET thread từ trang đơn (khách guest/chưa trả lời không có trong inbox).
+  const [fetchingRemote, setFetchingRemote] = useState(false);
+  const [fetchNote, setFetchNote] = useState("");
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const openImage = useCallback((src: string) => setLightboxSrc(src), []);
   const threadEndRef = useRef<HTMLDivElement>(null);
@@ -41,23 +52,86 @@ export function MessageBuyerDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Tải hội thoại hiện có của khách khi mở panel.
+  const loadConvo = useCallback(async (): Promise<OrderConversation | null> => {
+    try {
+      const r = await fetch(`/api/orders/conversation?orderId=${order.orderId}`);
+      return r.ok ? ((await r.json()) as OrderConversation) : null;
+    } catch {
+      return null;
+    }
+  }, [order.orderId]);
+
+  // Tải hội thoại đã có; nếu DB chưa có gì thì nhờ extension GET từ trang đơn rồi poll.
   useEffect(() => {
     let alive = true;
-    setLoadingConvo(true);
-    fetch(`/api/orders/conversation?orderId=${order.orderId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: OrderConversation | null) => {
-        if (alive) setConvo(d);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (alive) setLoadingConvo(false);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
       });
+
+    (async () => {
+      setLoadingConvo(true);
+      setFetchNote("");
+      const first = await loadConvo();
+      if (!alive) return;
+      setConvo(first);
+      setLoadingConvo(false);
+
+      // Đã có tin, hoặc extension từng trả lời "đơn này không có hội thoại" → khỏi hỏi lại.
+      if (first && (first.messages.length > 0 || first.fetchedAt > 0)) return;
+      if (noShop) return;
+
+      setFetchingRemote(true);
+      let triggered = false;
+      try {
+        const res = await fetch("/api/orders/conversation/fetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shopName: order.shopName, orderId: order.orderId }),
+        });
+        triggered = res.ok;
+        if (!res.ok) {
+          const d = (await res.json().catch(() => ({}))) as { code?: string };
+          if (alive) {
+            setFetchNote(
+              d.code === "shop_offline"
+                ? "Shop chưa có extension online nên chưa lấy được hội thoại cũ — hãy mở Etsy của shop này."
+                : "Không yêu cầu được extension lấy hội thoại.",
+            );
+          }
+        }
+      } catch {
+        if (alive) setFetchNote("Lỗi mạng khi yêu cầu lấy hội thoại.");
+      }
+      if (!alive || !triggered) {
+        if (alive) setFetchingRemote(false);
+        return;
+      }
+
+      for (let i = 0; i < POLL_TIMES; i++) {
+        await sleep(POLL_INTERVAL_MS);
+        if (!alive) return;
+        const next = await loadConvo();
+        if (!alive) return;
+        if (next) setConvo(next);
+        // fetchedAt > 0 = extension đã trả lời (kể cả khi đơn thật sự chưa có hội thoại).
+        if (next && (next.messages.length > 0 || next.fetchedAt > 0)) {
+          setFetchingRemote(false);
+          return;
+        }
+      }
+      if (alive) {
+        setFetchingRemote(false);
+        setFetchNote("Chưa lấy được hội thoại từ Etsy — thử mở lại panel sau.");
+      }
+    })();
+
     return () => {
       alive = false;
+      if (timer) clearTimeout(timer);
     };
-  }, [order.orderId]);
+  }, [loadConvo, noShop, order.shopName, order.orderId]);
 
   // Cuộn xuống tin mới nhất khi đã tải xong thread.
   useEffect(() => {
@@ -99,7 +173,10 @@ export function MessageBuyerDialog({
     }
   };
 
-  const hasThread = !!convo?.conversationId && convo.messages.length > 0;
+  const hasThread = !!convo && convo.messages.length > 0;
+  // Chỉ hội thoại có trong inbox mới mở được trang Messenger; thread lấy từ trang đơn thì không.
+  const messengerHref =
+    convo?.source === "inbox" && convo.conversationId ? `/messages/${convo.conversationId}` : null;
 
   return (
     // Panel không chặn tương tác (non-modal): không có overlay, trang chính vẫn click được.
@@ -118,9 +195,9 @@ export function MessageBuyerDialog({
             </p>
           </div>
           <div className="flex items-center gap-1">
-            {convo?.conversationId ? (
+            {messengerHref ? (
               <Link
-                href={`/messages/${convo.conversationId}`}
+                href={messengerHref}
                 className="flex items-center gap-1 rounded-full px-2 py-1 text-xs text-primary hover:bg-secondary"
                 title="Mở trong Messenger"
               >
@@ -157,12 +234,22 @@ export function MessageBuyerDialog({
               ))}
               <div ref={threadEndRef} />
             </div>
+          ) : fetchingRemote ? (
+            <div className="flex items-center justify-center gap-2 py-6 text-center text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Đang lấy hội thoại từ trang đơn Etsy…
+            </div>
           ) : (
             <p className="py-6 text-center text-sm text-muted-foreground">
               Khách chưa có hội thoại nào — tin gửi đi sẽ tạo hội thoại mới.
             </p>
           )}
         </div>
+
+        {fetchNote && !hasThread && (
+          <p className="mb-2 rounded-xl border border-border bg-secondary px-3 py-2 text-xs text-muted-foreground">
+            {fetchNote}
+          </p>
+        )}
 
         {noShop && (
           <p className="mb-2 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
