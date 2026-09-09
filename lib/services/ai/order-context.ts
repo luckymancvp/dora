@@ -3,6 +3,9 @@ import { getEtsyOrdersCollection } from "@/lib/db/collections";
 import { mapOrder } from "@/lib/services/orders-read";
 import { getOrderTrackingMap } from "@/lib/services/orders-tracking";
 import type { EtsyOrderDoc, OrderListItem } from "@/lib/types/etsy";
+// Prompt gửi cho khách nên CHỈ dùng link hãng chính thức — không dùng
+// resolveTrackingUrl (có 17track + link Etsy nội bộ, không hợp để gửi khách).
+import { publicTrackingUrl } from "@/lib/services/tracking-url";
 
 /**
  * Giai đoạn 1 — Grounding: lấy đơn hàng THẬT của khách để AI trả lời có căn cứ
@@ -14,26 +17,6 @@ import type { EtsyOrderDoc, OrderListItem } from "@/lib/types/etsy";
 
 /** Số đơn gần nhất đưa vào prompt (giới hạn để tiết kiệm token). */
 const MAX_ORDERS_FOR_PROMPT = 3;
-
-/**
- * Link tracking CÔNG KHAI chính thức theo hãng — chỉ dựng cho hãng có URL
- * pattern chuẩn 100%; hãng khác trả "" (prompt chỉ đưa carrier + mã).
- * KHÔNG dùng tracking_url lưu trong order_tracking: đó là link
- * etsy.com/your/orders/... nội bộ của tài khoản shop, khách bấm vào bị chặn.
- */
-function publicTrackingUrl(carrier: string, code: string): string {
-  const c = carrier.trim().toLowerCase();
-  const e = encodeURIComponent(code.trim());
-  if (!e) return "";
-  // Định dạng mới của USPS (link cũ /go/TrackConfirmAction?tLabels= vẫn sống
-  // nhưng bị redirect về đây — xác nhận bằng trình duyệt 2026-07).
-  if (c.includes("usps")) return `https://tools.usps.com/tracking/${e}`;
-  if (c.includes("ups")) return `https://www.ups.com/track?loc=en_US&tracknum=${e}`;
-  if (c.includes("fedex")) return `https://www.fedex.com/fedextrack/?trknbr=${e}`;
-  // DHL: không có URL pattern công khai được xác nhận chắc chắn (2026-07) →
-  // không dựng link, prompt chỉ đưa "DHL <mã>" (quy tắc: không chuẩn 100% thì thôi).
-  return "";
-}
 
 /** unix giây → "YYYY-MM-DD" (UTC). Trả "" nếu không có/không hợp lệ. */
 function fmtDate(unixSec: number): string {

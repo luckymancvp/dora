@@ -1,6 +1,7 @@
 import type { Filter } from "mongodb";
 import { getOrderTrackingCollection } from "@/lib/db/collections";
 import { asNumber, asString, isObject } from "@/lib/services/etsy-utils";
+import { resolveTrackingUrl } from "@/lib/services/tracking-url";
 import type { OrderTracking, OrderTrackingDoc, TrackingEntry } from "@/lib/types/etsy";
 
 /**
@@ -74,7 +75,8 @@ export async function getOrderTrackingMap(
       .map((t) => ({
         code: t.tracking_code,
         carrier: t.carrier_name ?? "",
-        url: t.tracking_url ?? "",
+        // Dựng bù link khi Etsy không trả tracking_url (hãng gõ sai/không nhận diện).
+        url: resolveTrackingUrl(t.tracking_url ?? "", t.carrier_name ?? "", t.tracking_code),
         isDelivered: t.is_delivered === true,
       }));
     if (list.length > 0) map.set(d.order_id, list);
