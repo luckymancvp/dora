@@ -4,12 +4,14 @@ import type { AiSuggestionEventDoc, AutoReplyDoc, ConversationDoc, EtsyOrderDoc,
 import type { SheetConfigDoc, SheetRowDoc } from "@/lib/types/sheets";
 import type { OrderStatusDoc } from "@/lib/types/order-status";
 import type { TrackingJob } from "@/lib/types/tracking";
-import { ensureIndexes } from "@/lib/db/indexes";
+import { ensureIndexes, ensureStoresIndexes } from "@/lib/db/indexes";
 
 // Lazy ensure index một lần cho mỗi process (cache global cho dev hot-reload).
 declare global {
   // eslint-disable-next-line no-var
   var _indexesEnsured: Promise<void> | undefined;
+  // eslint-disable-next-line no-var
+  var _storesIndexesEnsured: Promise<void> | undefined;
 }
 
 // Tên DB: ưu tiên env MONGODB_DB, mặc định "meta_local"
@@ -107,6 +109,26 @@ export async function getTrackingJobsCollection(): Promise<Collection<TrackingJo
 }
 
 /** Collection shop của dora (DB khác: dora-master). Dùng để lấy Etsy shop_id thật. */
+/**
+ * DB stores (dora-master). Ensure index riêng — collection ở đây do extension /
+ * dora-backend ghi nên ensureIndexes(getDb()) không chạm tới được.
+ */
+async function getStoresDb(): Promise<Db> {
+  const client = await clientPromise;
+  const db = client.db(STORES_DB_NAME);
+
+  if (!global._storesIndexesEnsured) {
+    global._storesIndexesEnsured = ensureStoresIndexes(db).catch((err) => {
+      // Reset để lần sau thử lại nếu tạo index thất bại.
+      global._storesIndexesEnsured = undefined;
+      throw err;
+    });
+  }
+  await global._storesIndexesEnsured;
+
+  return db;
+}
+
 export async function getStoresCollection(): Promise<Collection<StoreDoc>> {
   const client = await clientPromise;
   return client.db(STORES_DB_NAME).collection<StoreDoc>("stores");
@@ -117,8 +139,8 @@ export async function getStoresCollection(): Promise<Collection<StoreDoc>> {
  * Bỏ qua getDb() (meta_local) vì collection nằm ở DB khác.
  */
 export async function getEtsyOrdersCollection(): Promise<Collection<EtsyOrderDoc>> {
-  const client = await clientPromise;
-  return client.db(STORES_DB_NAME).collection<EtsyOrderDoc>("etsy_orders");
+  const db = await getStoresDb();
+  return db.collection<EtsyOrderDoc>("etsy_orders");
 }
 
 /**
@@ -127,8 +149,8 @@ export async function getEtsyOrdersCollection(): Promise<Collection<EtsyOrderDoc
  * hiện số tracking (payload list order của Etsy không nhúng số tracking).
  */
 export async function getOrderTrackingCollection(): Promise<Collection<OrderTrackingDoc>> {
-  const client = await clientPromise;
-  return client.db(STORES_DB_NAME).collection<OrderTrackingDoc>("order_tracking");
+  const db = await getStoresDb();
+  return db.collection<OrderTrackingDoc>("order_tracking");
 }
 
 /**

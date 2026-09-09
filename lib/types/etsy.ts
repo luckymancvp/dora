@@ -401,11 +401,55 @@ export interface OrderListItem {
   shippingMethod: string;
   /** Trạng thái giao từ data order (Delivered/Shipped + ngày). */
   shipping: OrderShipping;
+  /** unix giây Etsy đánh dấu đơn hoàn tất (fulfillment.completed_date; 0 nếu chưa). */
+  completedDate: number;
+  /** Đơn đã bị huỷ (data.is_canceled). */
+  isCanceled: boolean;
+  /** Đơn thuần digital/download (fulfillment.is_fully_digital hoặc data.is_download_only). */
+  isDigital: boolean;
+  /** Đơn đã hoàn tiền toàn phần hoặc một phần (payment.is_*_refunded). */
+  isRefunded: boolean;
+  /** Ghi chú khách để lại lúc đặt (data.notes.note_from_buyer; "" nếu không có). */
+  noteFromBuyer: string;
+  /** Khách đánh dấu đơn là quà (data.is_gift). */
+  isGift: boolean;
+  /** Lời nhắn quà tặng (data.gift_message; "" nếu không có). */
+  giftMessage: string;
   /** Danh sách tracking thật (1 đơn có thể nhiều mã); rỗng nếu chưa GET. */
   trackings: OrderTracking[];
   toAddress: OrderAddress;
   transactions: OrderTransaction[];
 }
+
+/**
+ * Cách sắp xếp danh sách đơn (mirror dropdown "Sort by" của Etsy).
+ * "completed" = theo ngày hoàn tất, "destination" = theo nước nhận.
+ */
+export type OrderSort = "newest" | "oldest" | "completed" | "destination";
+
+/** Khoảng thời gian lọc (tính lùi từ hiện tại). "all" = không lọc. */
+export type OrderDateRange = "all" | "30d" | "90d" | "365d";
+
+/**
+ * Nhóm "Delivery" của Etsy vốn là trạng thái shipping LABEL, nằm trong
+ * fulfillment.shipments[] — mảng này LUÔN RỖNG trong data ta sync về nên không
+ * lọc được. Ở đây map sang trạng thái HOÀN TIỀN của đơn (payment.is_*_refunded):
+ * dữ liệu có thật và sát nhu cầu vận hành hơn.
+ */
+export type OrderDelivery = "all" | "refund" | "purchased";
+
+/** Trạng thái hoàn tất (mirror nhóm "Completed status" của Etsy). */
+export type OrderCompletedStatus =
+  | "all"
+  | "pre-transit"
+  | "in-transit"
+  | "delivered"
+  | "no-tracking"
+  | "cancelled"
+  | "digital";
+
+/** Giá trị đặc biệt cho filter Destination: "mọi nước còn lại" (ngoài danh sách facet). */
+export const DESTINATION_OTHER = "__other";
 
 /** Bộ lọc danh sách đơn. */
 export interface OrderFilters {
@@ -413,6 +457,40 @@ export interface OrderFilters {
   shopName: string;
   tab: OrderTab;
   page: number;
+  sort: OrderSort;
+  dateRange: OrderDateRange;
+  delivery: OrderDelivery;
+  status: OrderCompletedStatus;
+  /** "" = tất cả nước | tên nước chính xác | DESTINATION_OTHER. */
+  destination: string;
+  hasNote: boolean;
+  isGift: boolean;
+  isPersonalized: boolean;
+}
+
+/**
+ * Giá trị mặc định của bộ lọc — dùng chung cho state khởi tạo, nút "Reset filters",
+ * và để hook bỏ qua param còn ở mặc định khi build URL.
+ */
+export const DEFAULT_ORDER_FILTERS: OrderFilters = {
+  search: "",
+  shopName: "",
+  tab: "New",
+  page: 1,
+  sort: "newest",
+  dateRange: "all",
+  delivery: "all",
+  status: "all",
+  destination: "",
+  hasNote: false,
+  isGift: false,
+  isPersonalized: false,
+};
+
+/** 1 dòng facet nước nhận — dựng từ dữ liệu thật thay vì hardcode 3 dòng như Etsy. */
+export interface OrderCountryFacet {
+  country: string;
+  count: number;
 }
 
 /** Phản hồi GET /api/orders (phân trang offset/page). */
@@ -424,6 +502,11 @@ export interface OrdersResponse {
   totalPages: number;
   /** Số đơn theo từng tab (tính trên cùng filter search/shop) để hiện badge. */
   tabCounts: { New: number; Completed: number };
+  /**
+   * Nước nhận có thật trong tập đã lọc (KHÔNG áp chính filter destination, để
+   * người dùng còn thấy đường đổi sang nước khác), kèm số đơn.
+   */
+  facets: { countries: OrderCountryFacet[] };
 }
 
 /** Tin nhắn đang gửi (chưa được Etsy xác nhận) — hiển thị tách khỏi list đã fetch. */
