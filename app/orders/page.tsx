@@ -11,18 +11,37 @@ import { OrdersPagination } from "@/components/orders/OrdersPagination";
 import { FetchOrdersButton } from "@/components/orders/FetchOrdersButton";
 import { MessageBuyerDialog } from "@/components/orders/MessageBuyerDialog";
 import { OrderUpdateSidebar } from "@/components/orders/OrderUpdateSidebar";
+import { DEFAULT_ORDER_FILTERS } from "@/lib/types/etsy";
 import type { OrderFilters as Filters, OrderListItem, OrderTab } from "@/lib/types/etsy";
+import type { OrderGroupBy } from "@/components/orders/OrdersList";
 
 const TABS: OrderTab[] = ["New", "Completed"];
 
+/** Cách gom nhóm phải bám theo cột đang sort ở service (xem SORT_SPECS). */
+const GROUP_BY_SORT: Record<Filters["sort"], OrderGroupBy> = {
+  newest: "orderDate",
+  oldest: "orderDate",
+  completed: "completedDate",
+  destination: "country",
+};
+
+/** Các filter thuộc rail (không tính search/tab/page) — dùng để đếm & reset. */
+function countActiveFilters(f: Filters): number {
+  return (
+    (f.shopName ? 1 : 0) +
+    (f.dateRange !== "all" ? 1 : 0) +
+    (f.delivery !== "all" ? 1 : 0) +
+    (f.status !== "all" ? 1 : 0) +
+    (f.destination ? 1 : 0) +
+    (f.hasNote ? 1 : 0) +
+    (f.isGift ? 1 : 0) +
+    (f.isPersonalized ? 1 : 0)
+  );
+}
+
 export default function OrdersPage() {
   const { data: shops } = useShops();
-  const [filters, setFilters] = useState<Filters>({
-    search: "",
-    shopName: "",
-    tab: "New",
-    page: 1,
-  });
+  const [filters, setFilters] = useState<Filters>(DEFAULT_ORDER_FILTERS);
   const [messageOrder, setMessageOrder] = useState<OrderListItem | null>(null);
   const [updateOrder, setUpdateOrder] = useState<OrderListItem | null>(null);
 
@@ -32,7 +51,12 @@ export default function OrdersPage() {
   const patch = (p: Partial<Filters>) =>
     setFilters((f) => ({ ...f, ...p, page: "page" in p ? (p.page as number) : 1 }));
 
+  // Reset rail: giữ nguyên search + tab đang xem, trả mọi filter khác về mặc định.
+  const resetFilters = () =>
+    setFilters((f) => ({ ...DEFAULT_ORDER_FILTERS, search: f.search, tab: f.tab }));
+
   const items = data?.items ?? [];
+  const activeFilters = countActiveFilters(filters);
 
   // Khi đang search mà tab hiện tại không có kết quả nhưng tab kia có,
   // tự chuyển sang tab kia (tabCounts đã tính theo search) để khỏi phải bấm tay.
@@ -93,6 +117,21 @@ export default function OrdersPage() {
         ))}
       </div>
 
+      {activeFilters > 0 && (
+        <div className="mb-4 flex items-center gap-3 rounded-xl bg-secondary px-3 py-2 text-sm text-muted-foreground">
+          <span>
+            Đang bật <strong className="text-foreground">{activeFilters}</strong> bộ lọc
+            {data ? ` · ${data.total} đơn` : ""}
+          </span>
+          <button
+            onClick={resetFilters}
+            className="ml-auto font-medium text-primary hover:underline"
+          >
+            Xoá bộ lọc
+          </button>
+        </div>
+      )}
+
       <div className="grid gap-6 md:grid-cols-[1fr_16rem]">
         {/* Cột trái: list + pagination */}
         <div className="space-y-4">
@@ -134,6 +173,7 @@ export default function OrdersPage() {
             <>
               <OrdersList
                 items={items}
+                groupBy={GROUP_BY_SORT[filters.sort]}
                 onMessage={(o) => {
                   setUpdateOrder(null);
                   setMessageOrder(o);
@@ -157,8 +197,10 @@ export default function OrdersPage() {
         <div className="hidden md:block">
           <OrderFilters
             shops={shops ?? []}
-            shopName={filters.shopName}
-            onShopChange={(v) => patch({ shopName: v })}
+            countries={data?.facets.countries ?? []}
+            filters={filters}
+            onChange={patch}
+            onReset={resetFilters}
           />
         </div>
       </div>

@@ -120,6 +120,39 @@ const AI_EVENT_INDEXES: IndexDef[] = [
   { keys: { shopId: 1, created_at: -1 }, options: { name: "idx_shop_created" } },
 ];
 
+/**
+ * Index cho dora-master.etsy_orders — collection này TRƯỚC ĐÂY chỉ có _id_, mọi
+ * truy vấn trang Orders đều COLLSCAN + in-memory SORT. Bộ lọc kiểu Etsy (sort
+ * theo ngày hoàn tất, lọc theo nước…) làm chuyện đó tệ hơn nhiều khi đơn tăng.
+ * Prefix chung là order_state_name vì mọi query đều kèm clause tab.
+ */
+const ETSY_ORDER_INDEXES: IndexDef[] = [
+  // Tab + sort Newest/Oldest (mặc định). Kèm _id để tie-break khớp SORT_SPECS.
+  {
+    keys: { "data.order_state_name": 1, "data.order_date": -1, _id: -1 },
+    options: { name: "idx_state_order_date" },
+  },
+  // Tab + sort "Date completed".
+  {
+    keys: { "data.order_state_name": 1, "data.fulfillment.completed_date": -1, _id: -1 },
+    options: { name: "idx_state_completed_date" },
+  },
+  // Sort/lọc Destination + facet đếm theo nước.
+  {
+    keys: { "data.fulfillment.to_address.country": 1, "data.order_date": -1 },
+    options: { name: "idx_country_order_date" },
+  },
+  // Tra cứu theo mã đơn (search + enrich). KHÔNG unique: collection do
+  // extension/dora-backend ghi, không đảm bảo chưa từng có bản trùng.
+  { keys: { "data.order_id": 1 }, options: { name: "idx_order_id" } },
+  { keys: { "data.shop_id": 1 }, options: { name: "idx_shop_id" } },
+];
+
+/** Index cho dora-master.order_tracking — getOrderTrackingMap query $in theo order_id. */
+const ORDER_TRACKING_INDEXES: IndexDef[] = [
+  { keys: { order_id: 1 }, options: { name: "idx_order_id" } },
+];
+
 function isAlreadyExistsError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return (
@@ -140,6 +173,15 @@ async function createIndexes(db: Db, collName: string, defs: IndexDef[]): Promis
       throw err;
     }
   }
+}
+
+/**
+ * Index cho DB stores (dora-master) — TÁCH KHỎI ensureIndexes vì các collection
+ * này nằm ở database khác (xem STORES_DB_NAME trong collections.ts).
+ */
+export async function ensureStoresIndexes(db: Db): Promise<void> {
+  await createIndexes(db, "etsy_orders", ETSY_ORDER_INDEXES);
+  await createIndexes(db, "order_tracking", ORDER_TRACKING_INDEXES);
 }
 
 export async function ensureIndexes(db: Db): Promise<void> {
