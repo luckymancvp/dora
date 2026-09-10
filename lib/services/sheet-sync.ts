@@ -9,7 +9,7 @@ import {
   deriveReceiptTxKey,
   normalizeStore,
 } from "@/lib/google/sheet-utils";
-import type { SheetConfigDoc, SheetRowDoc } from "@/lib/types/sheets";
+import type { SheetConfigDoc, SheetPrefixEntry, SheetRowDoc } from "@/lib/types/sheets";
 
 /** TTL chỉ mục: dữ liệu liệt kê có thể cũ tối đa ~2 phút. */
 export const SYNC_TTL_MS = 2 * 60 * 1000;
@@ -24,32 +24,44 @@ const UPSERT_BATCH = 2000;
 
 function isStale(cfg: SheetConfigDoc): boolean {
   if (!cfg.lastSyncedAt) return true;
+  // Config sync từ trước khi có map tiền tố → ép sync 1 lần để backfill `prefixes`, nếu không
+  // định tuyến theo tiền tố sẽ im lặng không hoạt động cho tới lần sync định kỳ kế tiếp.
+  // Sync xong `prefixes` LUÔN được set (kể cả []) nên không lặp vô hạn.
+  if (cfg.prefixes === undefined) return true;
   return Date.now() - new Date(cfg.lastSyncedAt).getTime() > SYNC_TTL_MS;
 }
 
-/** Đọc tab Prefix (cột A store) → danh sách store thuộc sheet (gợi ý ưu tiên). */
-async function readPrefixStores(
+/**
+ * Đọc tab Prefix (cột A = Store, cột B = tiền tố order id) → danh sách store + map tiền tố.
+ * Tiền tố dùng để định tuyến order id có prefix (`IRS-4167469772`) về đúng sheet/store khi tra
+ * status. Giữ nguyên văn tiền tố (kể cả dấu gạch cuối) — chính dấu gạch tách "IRC-" khỏi "IRCI-".
+ */
+async function readPrefixTab(
   sheets: Awaited<ReturnType<typeof getAuthorizedSheetsClient>>,
   spreadsheetId: string,
   prefixTabName: string,
-): Promise<string[]> {
+): Promise<{ ok: boolean; stores: string[]; prefixes: SheetPrefixEntry[] }> {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${prefixTabName}!A:A`,
+      range: `${prefixTabName}!A:B`,
     });
     const rows = res.data.values ?? [];
     const stores: string[] = [];
+    const prefixes: SheetPrefixEntry[] = [];
     for (const r of rows) {
-      const v = typeof r[0] === "string" ? r[0].trim() : "";
-      if (!v) continue;
-      if (normalizeStore(v) === "store") continue; // bỏ header
-      stores.push(v);
+      const store = typeof r[0] === "string" ? r[0].trim() : "";
+      if (!store) continue;
+      if (normalizeStore(store) === "store") continue; // bỏ header
+      stores.push(store);
+      const prefix = typeof r[1] === "string" ? r[1].trim() : "";
+      if (prefix) prefixes.push({ store, prefix });
     }
-    return [...new Set(stores)];
+    return { ok: true, stores: [...new Set(stores)], prefixes };
   } catch {
     // Tab Prefix không bắt buộc cho việc tra cứu (đã khớp theo receiptTxKey).
-    return [];
+    // `ok: false` để KHÔNG ghi đè map tiền tố cũ bằng rỗng khi chỉ là lỗi đọc tạm thời.
+    return { ok: false, stores: [], prefixes: [] };
   }
 }
 
@@ -81,7 +93,16 @@ export async function syncSheetNow(configId: ObjectId): Promise<{ rowCount: numb
   try {
     const sheets = await getAuthorizedSheetsClient();
 
-    const stores = await readPrefixStores(sheets, cfg.spreadsheetId, cfg.prefixTabName);
+    const prefixTab = await readPrefixTab(sheets, cfg.spreadsheetId, cfg.prefixTabName);
+    const stores = prefixTab.stores;
+
+    // Đọc được → ghi nguyên kết quả (kể cả [] nghĩa là tab không có cột B).
+    // Đọc lỗi → giữ map cũ; chỉ ghi [] khi chưa từng có, để đánh dấu "đã thử" cho isStale.
+    const prefixSet: { prefixes?: SheetPrefixEntry[] } = prefixTab.ok
+      ? { prefixes: prefixTab.prefixes }
+      : cfg.prefixes === undefined
+        ? { prefixes: [] }
+        : {};
 
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: cfg.spreadsheetId,
@@ -169,6 +190,7 @@ export async function syncSheetNow(configId: ObjectId): Promise<{ rowCount: numb
           rowCount,
           updatedAt: new Date(),
           ...(stores.length > 0 ? { shopNames: stores } : {}),
+          ...prefixSet,
         },
       },
     );

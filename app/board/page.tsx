@@ -15,7 +15,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const DEFAULT_FILTERS: ConversationFilters = {
   search: "",
-  notReplied: false,
+  notReplied: true, // mặc định: chỉ hiện hội thoại chưa trả lời
   hasOrder: false,
   orderHelp: false,
   hasNote: false,

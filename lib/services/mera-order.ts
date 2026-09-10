@@ -399,6 +399,104 @@ export async function getMeraStatuses(opts: { actorEmail: string }): Promise<str
   return rows.map((s) => s.name);
 }
 
+/**
+ * Tra STATUS của nhiều đơn cùng lúc (dùng cho import tracking CSV/XLSX).
+ *
+ * Khác `resolveMeraOrder`: KHÔNG fetch order-table-columns và KHÔNG map DTO đầy đủ —
+ * chỉ cần `status` item-scope nên bỏ hẳn round-trip columns (import có thể tra hàng trăm đơn).
+ * Trả về Map receiptId → { statuses, store }. `store` là store Mera ghi nhận cho đơn — nguồn
+ * duy nhất biết shop khi tiền tố order id chưa được khai trong tab Prefix của sheet nào.
+ * Đơn không tìm thấy KHÔNG có key trong Map (caller phân biệt "không thấy" vs "thấy nhưng khác").
+ *
+ * Thiếu env Mera → { statuses: Map rỗng, unavailable: true } (soft — Sheet vẫn tra được).
+ */
+/** Kết quả tra Mera cho 1 đơn: status của các item + store Mera ghi nhận. */
+export interface MeraStatusHit {
+  statuses: string[];
+  /** `orders.store` — dùng để phân loại shop khi tiền tố order id chưa khai trong tab Prefix. */
+  store: string;
+}
+
+export async function getMeraOrderStatuses(opts: {
+  /** Mỗi đơn kèm store RIÊNG: 1 file gia công gộp đơn của nhiều shop nên store khác nhau từng dòng. */
+  receipts: { receiptId: string; storeName: string }[];
+  actorEmail: string;
+}): Promise<{ statuses: Map<string, MeraStatusHit>; unavailable: boolean }> {
+  const statuses = new Map<string, MeraStatusHit>();
+  if (!meraConfig()) return { statuses, unavailable: true };
+
+  const byReceipt = new Map<string, string>();
+  for (const r of opts.receipts) {
+    const id = r.receiptId.trim();
+    if (id && !byReceipt.has(id)) byReceipt.set(id, r.storeName ?? "");
+  }
+  const unique = [...byReceipt.keys()];
+  if (unique.length === 0) return { statuses, unavailable: false };
+
+  // Mera không có endpoint tra hàng loạt → chạy song song có giới hạn để không dội API.
+  const CONCURRENCY = 5;
+  let cursor = 0;
+  let unavailable = false;
+
+  async function worker(): Promise<void> {
+    while (cursor < unique.length) {
+      const receipt = unique[cursor++];
+      try {
+        const { data } = await meraFetch(
+          `/api/v2/orders?q=${encodeURIComponent(receipt)}&include_items=true&page_size=50`,
+          { actorEmail: opts.actorEmail },
+        );
+
+        // Lọc đúng đơn theo order_id (kết thúc "-<receiptId>" hoặc trùng nguyên) — như resolveMeraOrder.
+        const rawOrders = asArray(getPath(data, "orders")).filter((o) => {
+          if (getPath(o, "is_deleted") === true) return false;
+          const orderId = firstString(o, ["order_id"]);
+          return orderId.endsWith(`-${receipt}`) || orderId === receipt;
+        });
+        if (rawOrders.length === 0) continue;
+
+        // Nhiều KQ → thu hẹp theo store rồi lấy đơn mới nhất (giữ nguyên quy tắc resolveMeraOrder).
+        const storeName = byReceipt.get(receipt) ?? "";
+        let candidates = rawOrders;
+        if (candidates.length > 1 && storeName.trim()) {
+          const store = normalizeStore(storeName);
+          const byStore = candidates.filter(
+            (o) => normalizeStore(firstString(o, ["store"])) === store,
+          );
+          if (byStore.length > 0) candidates = byStore;
+        }
+        const chosen = candidates.reduce((a, b) => (createdAtMs(b) > createdAtMs(a) ? b : a));
+
+        let rawItems = asArray(getPath(chosen, "items"));
+        if (rawItems.length === 0) {
+          const orderId = firstString(chosen, ["order_id"]);
+          if (orderId) {
+            const { data: itemsData } = await meraFetch(
+              `/api/v2/orders/${encodeURIComponent(orderId)}/items`,
+              { actorEmail: opts.actorEmail },
+            );
+            rawItems = asArray(getPath(itemsData, "items"));
+          }
+        }
+
+        const found = [
+          ...new Set(
+            rawItems.map((it) => resolveFieldValue(it, "status").trim()).filter(Boolean),
+          ),
+        ];
+        // Đơn tồn tại nhưng item không có status → vẫn set key (rỗng) để phân biệt với "không thấy".
+        statuses.set(receipt, { statuses: found, store: firstString(chosen, ["store"]) });
+      } catch (err) {
+        // Mera down/timeout → dừng đoán, báo unavailable cho caller hiển thị đúng lý do.
+        if (err instanceof MeraApiError) unavailable = true;
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, unique.length) }, worker));
+  return { statuses, unavailable };
+}
+
 // ---- Update: map fieldKey → PATCH body (unified 2 scope) ----
 
 /** Unwrap payload có thể bọc trong {item:...}/{order:...} hoặc trả object trực tiếp. */
