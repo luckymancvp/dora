@@ -92,6 +92,16 @@ const SHEET_ROW_INDEXES: IndexDef[] = [
   { keys: { configId: 1 }, options: { name: "idx_config_id" } },
 ];
 
+const TRACKING_IMPORT_PROFILE_INDEXES: IndexDef[] = [
+  // Chặn trùng tên nguồn (nameKey = name lowercase) + list theo tên.
+  { keys: { nameKey: 1 }, options: { name: "uq_name_key", unique: true } },
+];
+
+const CARRIER_RULE_INDEXES: IndexDef[] = [
+  // Chỉ 1 document key="default" — unique để 2 lần lưu đồng thời không sinh 2 bộ quy tắc.
+  { keys: { key: 1 }, options: { name: "uq_key", unique: true } },
+];
+
 const TRACKING_JOB_INDEXES: IndexDef[] = [
   // Liệt kê job gần nhất + dọn job cũ. Cũng phục vụ sort created_at desc của list lịch sử.
   { keys: { created_at: -1 }, options: { name: "idx_created_at" } },
@@ -192,6 +202,8 @@ export async function ensureIndexes(db: Db): Promise<void> {
   await createIndexes(db, "sheet_rows", SHEET_ROW_INDEXES);
   await createIndexes(db, "message_templates", MESSAGE_TEMPLATE_INDEXES);
   await createIndexes(db, "tracking_jobs", TRACKING_JOB_INDEXES);
+  await createIndexes(db, "tracking_import_profiles", TRACKING_IMPORT_PROFILE_INDEXES);
+  await createIndexes(db, "carrier_rules", CARRIER_RULE_INDEXES);
   await createIndexes(db, "reply_examples", REPLY_EXAMPLE_INDEXES);
   await createIndexes(db, "ai_suggestion_events", AI_EVENT_INDEXES);
 }

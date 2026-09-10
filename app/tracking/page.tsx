@@ -18,11 +18,16 @@ import {
   Search,
   Plus,
   X,
+  Upload,
 } from "lucide-react";
 import { useShops } from "@/lib/hooks/useShops";
 import { MobileMenuButton } from "@/components/sidebar";
 import { HistorySection } from "@/components/tracking/HistorySection";
+import { ImportPanel } from "@/components/tracking/ImportPanel";
+import { ImportProfilesSection } from "@/components/tracking/ImportProfilesSection";
+import { CarrierRulesSection } from "@/components/tracking/CarrierRulesSection";
 import { carrierLabel } from "@/lib/types/tracking";
+import type { ImportStoreGroup } from "@/lib/types/tracking-import";
 
 type Precheck = "PENDING" | "CLEAR" | "EXISTS";
 type AddStatus = "NEW" | "SENDING" | "DONE" | "FAILED";
@@ -102,7 +107,7 @@ function missingFields(o: JobOrder): string[] {
   return missing;
 }
 
-type Tab = "add" | "history";
+type Tab = "add" | "history" | "config";
 
 export default function TrackingPage() {
   const { data: shops } = useShops();
@@ -123,6 +128,7 @@ export default function TrackingPage() {
   const [createErrors, setCreateErrors] = useState<{ shop: string; error: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   // Theo dõi phase của từng card để bật nút "xác nhận tất cả".
   const [phases, setPhases] = useState<Record<string, Phase>>({});
@@ -148,6 +154,51 @@ export default function TrackingPage() {
   const updateBlock = (key: string, patch: Partial<ShopBlock>) =>
     setBlocks((bs) => bs.map((b) => (b.key === key ? { ...b, ...patch } : b)));
   const addBlock = () => setBlocks((bs) => [...bs, newBlock()]);
+
+  /**
+   * Nhận kết quả import ĐÃ GOM THEO SHOP → dựng/điền khối cho từng shop.
+   * Shop suy từ tiền tố order id nên không cần chọn shop trước khi import.
+   * Khối đã có sẵn của đúng shop thì nối thêm đơn; chưa có thì tạo mới. Khối rỗng mặc định
+   * được tái dùng cho nhóm đầu tiên để không để lại 1 khối trống vô nghĩa.
+   */
+  const applyImportedGroups = useCallback(
+    (groups: ImportStoreGroup[]) => {
+      setBlocks((bs) => {
+        const next = [...bs];
+        for (const g of groups) {
+          const text = g.rows
+            .map((r) => [r.order_id, r.tracking_number, r.carrier].join("\t"))
+            .join("\n");
+
+          // Tên store trên Sheet có thể lệch hoa/thường với tên shop trong danh sách Ably.
+          const known = (shops ?? []).find(
+            (sh) => sh.shopName.trim().toLowerCase() === g.store.trim().toLowerCase(),
+          );
+          const select = known ? known.shopName : g.store ? CUSTOM : "";
+          const custom = known || !g.store ? "" : g.store;
+
+          const existing = next.findIndex(
+            (b) => !!g.store && shopNameOf(b).toLowerCase() === g.store.toLowerCase(),
+          );
+          if (existing >= 0) {
+            const cur = next[existing].bulk.trimEnd();
+            next[existing] = { ...next[existing], bulk: cur ? `${cur}\n${text}` : text };
+            continue;
+          }
+
+          const empty = next.findIndex((b) => !shopNameOf(b) && !b.bulk.trim());
+          if (empty >= 0) {
+            next[empty] = { ...next[empty], shopSelect: select, customShop: custom, bulk: text };
+          } else {
+            next.push({ ...newBlock(), shopSelect: select, customShop: custom, bulk: text });
+          }
+        }
+        return next;
+      });
+      setImporting(false);
+    },
+    [shops, newBlock],
+  );
   const removeBlock = (key: string) =>
     setBlocks((bs) => (bs.length > 1 ? bs.filter((b) => b.key !== key) : bs));
 
@@ -242,9 +293,20 @@ export default function TrackingPage() {
         >
           Lịch sử
         </button>
+        <button
+          onClick={() => setTab("config")}
+          className={`flex-1 rounded-full px-4 py-1.5 font-medium transition-colors ${
+            tab === "config"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Cấu hình import
+        </button>
       </div>
 
       {tab === "history" && <HistorySection />}
+      {tab === "config" && <ConfigTab />}
 
       {/* Tab add giữ mounted (hidden) để không mất job đang poll / đơn đã tick khi xem Lịch sử */}
       <div hidden={tab !== "add"}>
@@ -252,7 +314,9 @@ export default function TrackingPage() {
         Mỗi shop một khối: chọn shop, dán danh sách đơn (mỗi dòng: <code>order_id</code>{" "}
         &nbsp;tab/phẩy&nbsp; <code>tracking</code> &nbsp;tab/phẩy&nbsp; <code>carrier</code>). Hệ thống
         kiểm tra tracking hiện có, cảnh báo đơn đã có, add lần lượt rồi xác minh lại — các shop chạy song
-        song.
+        song. Có sẵn file của bên gia công? Bấm <strong>Import CSV/XLSX</strong> — hệ thống map cột
+        theo nguồn đã cấu hình, đối chiếu Google Sheet rồi Mera, chỉ lấy đơn đang{" "}
+        <code>PROCESSING</code> và <strong>tự tách theo shop</strong> (suy từ tiền tố order id).
       </p>
 
       {/* Chế độ nhập liệu nhiều shop */}
@@ -270,12 +334,24 @@ export default function TrackingPage() {
             />
           ))}
 
-          <button
-            onClick={addBlock}
-            className="flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-secondary"
-          >
-            <Plus className="h-4 w-4" /> Thêm shop
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={addBlock}
+              className="flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-secondary"
+            >
+              <Plus className="h-4 w-4" /> Thêm shop
+            </button>
+            <button
+              onClick={() => setImporting((v) => !v)}
+              className="flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-secondary"
+            >
+              <Upload className="h-4 w-4" /> Import CSV/XLSX
+            </button>
+          </div>
+
+          {importing && (
+            <ImportPanel onApply={applyImportedGroups} onClose={() => setImporting(false)} />
+          )}
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 
@@ -346,6 +422,38 @@ export default function TrackingPage() {
       )}
       </div>
       </div>
+    </div>
+  );
+}
+
+/** Tab cấu hình: nguồn file (map cột) và quy tắc suy carrier — 2 việc khác nhau, tách mục con. */
+function ConfigTab() {
+  const [section, setSection] = useState<"profiles" | "carriers">("profiles");
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center gap-1 rounded-full bg-secondary p-1 text-sm">
+        <button
+          onClick={() => setSection("profiles")}
+          className={`flex-1 rounded-full px-4 py-1.5 font-medium transition-colors ${
+            section === "profiles"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Nguồn file
+        </button>
+        <button
+          onClick={() => setSection("carriers")}
+          className={`flex-1 rounded-full px-4 py-1.5 font-medium transition-colors ${
+            section === "carriers"
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Quy tắc carrier
+        </button>
+      </div>
+      {section === "profiles" ? <ImportProfilesSection /> : <CarrierRulesSection />}
     </div>
   );
 }

@@ -33,8 +33,8 @@ export function BoardCell({
   aiTrigger: number;
   onDismiss: () => void;
 }) {
-  // Lịch sử đơn hàng mở sẵn khi vào bảng — thao tác cập nhật đơn là việc chính ở đây.
-  const [infoOpen, setInfoOpen] = useState(true);
+  // Đóng sẵn để vào bảng là thấy ngay khung tin nhắn; mở lại bằng nút trên header.
+  const [infoOpen, setInfoOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
 
   return (

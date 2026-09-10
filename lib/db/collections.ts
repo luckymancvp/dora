@@ -4,6 +4,8 @@ import type { AiSuggestionEventDoc, AutoReplyDoc, ConversationDoc, EtsyOrderDoc,
 import type { SheetConfigDoc, SheetRowDoc } from "@/lib/types/sheets";
 import type { OrderStatusDoc } from "@/lib/types/order-status";
 import type { TrackingJob } from "@/lib/types/tracking";
+import type { TrackingImportProfileDoc } from "@/lib/types/tracking-import";
+import type { CarrierRuleSetDoc } from "@/lib/types/carrier-rule";
 import { ensureIndexes, ensureStoresIndexes } from "@/lib/db/indexes";
 
 // Lazy ensure index một lần cho mỗi process (cache global cho dev hot-reload).
@@ -106,6 +108,27 @@ export async function getAiSuggestionEventsCollection(): Promise<Collection<AiSu
 export async function getTrackingJobsCollection(): Promise<Collection<TrackingJob>> {
   const db = await getDb();
   return db.collection<TrackingJob>("tracking_jobs");
+}
+
+/**
+ * Collection `tracking_import_profiles` — cấu hình map cột CSV/XLSX theo nguồn file
+ * (vd Printbell: order id cột A, tracking cột B, carrier cột C).
+ */
+export async function getTrackingImportProfilesCollection(): Promise<
+  Collection<TrackingImportProfileDoc>
+> {
+  const db = await getDb();
+  return db.collection<TrackingImportProfileDoc>("tracking_import_profiles");
+}
+
+/**
+ * Collection `carrier_rules` — bộ quy tắc suy carrier từ số tracking (thay công thức
+ * IFS/REGEXMATCH trên Sheet). Chỉ 1 document key="default", đọc/ghi nguyên khối vì
+ * THỨ TỰ quy tắc là ngữ nghĩa (khớp đầu tiên thắng).
+ */
+export async function getCarrierRulesCollection(): Promise<Collection<CarrierRuleSetDoc>> {
+  const db = await getDb();
+  return db.collection<CarrierRuleSetDoc>("carrier_rules");
 }
 
 /** Collection shop của dora (DB khác: dora-master). Dùng để lấy Etsy shop_id thật. */
