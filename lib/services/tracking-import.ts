@@ -381,15 +381,16 @@ export async function checkImportRows(opts: {
 
     const sheetHit = fromSheet.get(p.order_id);
     const meraHit = mera.statuses.get(p.order_id);
-    // Store đã định tuyến theo tiền tố — hiện lên UI để đối chiếu với shop của khối.
-    const store = sheetHit?.store ?? "";
+    // Shop: tiền tố → cột Store của dòng sheet → store Mera ghi nhận. Nhánh Mera cứu các đơn
+    // có tiền tố chưa khai trong tab Prefix nào (vd COVH-) — vẫn phân loại được shop.
+    const store = sheetHit?.store || meraHit?.store || "";
 
     // Ưu tiên Sheet CÓ status; Sheet có dòng nhưng status trống thì nhường Mera (nếu Mera có).
     // `found` mới là điều kiện chốt: bản ghi chỉ-định-tuyến (found=false) KHÔNG được coi là
     // "đã tra ra ở Sheet", nếu không đơn không tồn tại sẽ bị báo là thiếu Status.
     const useSheet =
       (sheetHit?.statuses.length ?? 0) > 0 || (sheetHit?.found === true && meraHit === undefined);
-    const statuses = useSheet ? sheetHit?.statuses : meraHit;
+    const statuses = useSheet ? sheetHit?.statuses : meraHit?.statuses;
 
     if (!statuses) {
       return {

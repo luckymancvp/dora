@@ -404,17 +404,25 @@ export async function getMeraStatuses(opts: { actorEmail: string }): Promise<str
  *
  * Khác `resolveMeraOrder`: KHÔNG fetch order-table-columns và KHÔNG map DTO đầy đủ —
  * chỉ cần `status` item-scope nên bỏ hẳn round-trip columns (import có thể tra hàng trăm đơn).
- * Trả về Map receiptId → danh sách status phân biệt (1 đơn nhiều item ⇒ nhiều status).
+ * Trả về Map receiptId → { statuses, store }. `store` là store Mera ghi nhận cho đơn — nguồn
+ * duy nhất biết shop khi tiền tố order id chưa được khai trong tab Prefix của sheet nào.
  * Đơn không tìm thấy KHÔNG có key trong Map (caller phân biệt "không thấy" vs "thấy nhưng khác").
  *
  * Thiếu env Mera → { statuses: Map rỗng, unavailable: true } (soft — Sheet vẫn tra được).
  */
+/** Kết quả tra Mera cho 1 đơn: status của các item + store Mera ghi nhận. */
+export interface MeraStatusHit {
+  statuses: string[];
+  /** `orders.store` — dùng để phân loại shop khi tiền tố order id chưa khai trong tab Prefix. */
+  store: string;
+}
+
 export async function getMeraOrderStatuses(opts: {
   /** Mỗi đơn kèm store RIÊNG: 1 file gia công gộp đơn của nhiều shop nên store khác nhau từng dòng. */
   receipts: { receiptId: string; storeName: string }[];
   actorEmail: string;
-}): Promise<{ statuses: Map<string, string[]>; unavailable: boolean }> {
-  const statuses = new Map<string, string[]>();
+}): Promise<{ statuses: Map<string, MeraStatusHit>; unavailable: boolean }> {
+  const statuses = new Map<string, MeraStatusHit>();
   if (!meraConfig()) return { statuses, unavailable: true };
 
   const byReceipt = new Map<string, string>();
@@ -477,7 +485,7 @@ export async function getMeraOrderStatuses(opts: {
           ),
         ];
         // Đơn tồn tại nhưng item không có status → vẫn set key (rỗng) để phân biệt với "không thấy".
-        statuses.set(receipt, found);
+        statuses.set(receipt, { statuses: found, store: firstString(chosen, ["store"]) });
       } catch (err) {
         // Mera down/timeout → dừng đoán, báo unavailable cho caller hiển thị đúng lý do.
         if (err instanceof MeraApiError) unavailable = true;
