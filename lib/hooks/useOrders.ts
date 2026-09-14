@@ -16,6 +16,11 @@ async function fetchOrders(filters: OrderFilters): Promise<OrdersResponse> {
   if (filters.dateRange !== DEFAULT_ORDER_FILTERS.dateRange) {
     params.set("dateRange", filters.dateRange);
   }
+  if (filters.dispatchBy !== DEFAULT_ORDER_FILTERS.dispatchBy) {
+    params.set("dispatchBy", filters.dispatchBy);
+    // Server cắt mốc "hôm nay" theo giờ trình duyệt để khớp ngày card hiển thị.
+    params.set("tzOffset", String(new Date().getTimezoneOffset()));
+  }
   if (filters.delivery !== DEFAULT_ORDER_FILTERS.delivery) params.set("delivery", filters.delivery);
   if (filters.status !== DEFAULT_ORDER_FILTERS.status) params.set("status", filters.status);
   if (filters.destination) params.set("destination", filters.destination);

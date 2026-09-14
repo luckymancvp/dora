@@ -19,6 +19,7 @@ import type {
   OrderCountryFacet,
   OrderDateRange,
   OrderDelivery,
+  OrderDispatchBy,
   OrderListItem,
   OrderPersonalization,
   OrderShipping,
@@ -310,6 +311,9 @@ export interface OrdersQueryOpts {
   page?: number;
   sort?: OrderSort;
   dateRange?: OrderDateRange;
+  dispatchBy?: OrderDispatchBy;
+  /** Date.getTimezoneOffset() của trình duyệt (phút) — để cắt mốc "hôm nay". */
+  tzOffset?: number;
   delivery?: OrderDelivery;
   status?: OrderCompletedStatus;
   destination?: string;
@@ -382,6 +386,54 @@ function dateRangeClause(
   return { [field]: { $gte: from } };
 }
 
+const DAY_SECONDS = 86400;
+const DISPATCH_PATH = "data.fulfillment.expected_ship_date";
+
+/**
+ * Clause "Dispatch by date". Mốc ngày cắt theo timezone TRÌNH DUYỆT (tzOffset)
+ * chứ không theo UTC server: card format "Dispatches by" bằng toLocaleDateString
+ * nên nếu cắt theo UTC, đơn hạn 23:00 giờ VN sẽ card ghi "hôm nay" mà filter
+ * xếp sang "ngày mai". Etsy lưu expected_ship_date lệch nửa ngày so với UTC
+ * (vd 16:00Z) nên lệch này xảy ra THẬT, không phải lý thuyết.
+ */
+function dispatchByClause(
+  dispatchBy: OrderDispatchBy,
+  tzOffsetMinutes: number,
+): Record<string, unknown> | null {
+  if (dispatchBy === "all") return null;
+  if (dispatchBy === "none") return { [DISPATCH_PATH]: { $in: [null, 0] } };
+
+  // getTimezoneOffset = UTC − giờ local (UTC+7 → -420). Quy "now" về trục local,
+  // cắt đầu ngày, rồi trả về trục UTC để so với unix giây trong DB.
+  const offsetSec = tzOffsetMinutes * 60;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const startOfToday =
+    Math.floor((nowSec - offsetSec) / DAY_SECONDS) * DAY_SECONDS + offsetSec;
+
+  switch (dispatchBy) {
+    case "overdue":
+      // Quá hạn chỉ có nghĩa với đơn chưa ship — đơn đã ship trễ không còn "việc phải làm".
+      return {
+        [DISPATCH_PATH]: { $gt: 0, $lt: startOfToday },
+        "data.fulfillment.was_shipped": { $ne: true },
+      };
+    case "today":
+      return { [DISPATCH_PATH]: { $gte: startOfToday, $lt: startOfToday + DAY_SECONDS } };
+    case "tomorrow":
+      return {
+        [DISPATCH_PATH]: {
+          $gte: startOfToday + DAY_SECONDS,
+          $lt: startOfToday + 2 * DAY_SECONDS,
+        },
+      };
+    case "week":
+      // 7 ngày tính cả hôm nay; KHÔNG gồm đơn quá hạn (đã có lựa chọn riêng).
+      return { [DISPATCH_PATH]: { $gte: startOfToday, $lt: startOfToday + 7 * DAY_SECONDS } };
+    default:
+      return null;
+  }
+}
+
 /**
  * Đếm số đơn theo nước nhận để dựng rail Destination từ dữ liệu THẬT (Etsy
  * hardcode 3 dòng; ở đây liệt kê nước có đơn kèm số lượng). Bỏ đơn thiếu địa chỉ.
@@ -451,6 +503,11 @@ export async function getOrders(opts: OrdersQueryOpts): Promise<OrdersResponse> 
   // nhau (completed_date vs order_date); nhét chung sẽ làm badge tab kia đếm
   // bằng field của tab đang xem → số không khớp khi bấm sang.
   const dateRange = opts.dateRange ?? "all";
+
+  // Hạn dispatch cùng một field ở cả hai tab nên nằm chung baseClauses được
+  // (khác filter ngày ở trên).
+  const dispatch = dispatchByClause(opts.dispatchBy ?? "all", opts.tzOffset ?? 0);
+  if (dispatch) baseClauses.push(dispatch);
 
   const delivery = deliveryClause(opts.delivery ?? "all");
   if (delivery) baseClauses.push(delivery);

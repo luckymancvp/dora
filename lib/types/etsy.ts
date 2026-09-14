@@ -503,6 +503,13 @@ export type OrderCompletedStatus =
   | "cancelled"
   | "digital";
 
+/**
+ * Lọc theo hạn dispatch (mirror "Dispatch by date" của Etsy), trên
+ * fulfillment.expected_ship_date — cùng field card hiện "Dispatches by".
+ * "overdue" = đã quá hạn mà CHƯA ship; "none" = đơn không có hạn dispatch.
+ */
+export type OrderDispatchBy = "all" | "overdue" | "today" | "tomorrow" | "week" | "none";
+
 /** Giá trị đặc biệt cho filter Destination: "mọi nước còn lại" (ngoài danh sách facet). */
 export const DESTINATION_OTHER = "__other";
 
@@ -514,6 +521,7 @@ export interface OrderFilters {
   page: number;
   sort: OrderSort;
   dateRange: OrderDateRange;
+  dispatchBy: OrderDispatchBy;
   delivery: OrderDelivery;
   status: OrderCompletedStatus;
   /** "" = tất cả nước | tên nước chính xác | DESTINATION_OTHER. */
@@ -534,6 +542,7 @@ export const DEFAULT_ORDER_FILTERS: OrderFilters = {
   page: 1,
   sort: "newest",
   dateRange: "all",
+  dispatchBy: "all",
   delivery: "all",
   status: "all",
   destination: "",
