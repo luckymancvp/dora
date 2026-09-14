@@ -30,6 +30,7 @@ function countActiveFilters(f: Filters): number {
   return (
     (f.shopName ? 1 : 0) +
     (f.dateRange !== "all" ? 1 : 0) +
+    (f.dispatchBy !== "all" ? 1 : 0) +
     (f.delivery !== "all" ? 1 : 0) +
     (f.status !== "all" ? 1 : 0) +
     (f.destination ? 1 : 0) +

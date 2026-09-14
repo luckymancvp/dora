@@ -147,6 +147,11 @@ const ETSY_ORDER_INDEXES: IndexDef[] = [
     keys: { "data.order_state_name": 1, "data.fulfillment.completed_date": -1, _id: -1 },
     options: { name: "idx_state_completed_date" },
   },
+  // Tab + lọc "Dispatch by date" (range trên expected_ship_date).
+  {
+    keys: { "data.order_state_name": 1, "data.fulfillment.expected_ship_date": 1 },
+    options: { name: "idx_state_expected_ship_date" },
+  },
   // Sort/lọc Destination + facet đếm theo nước.
   {
     keys: { "data.fulfillment.to_address.country": 1, "data.order_date": -1 },

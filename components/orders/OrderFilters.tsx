@@ -6,6 +6,7 @@ import type {
   OrderCountryFacet,
   OrderDateRange,
   OrderDelivery,
+  OrderDispatchBy,
   OrderFilters as Filters,
   OrderSort,
   ShopItem,
@@ -23,6 +24,15 @@ const DATE_OPTIONS: { value: OrderDateRange; label: string }[] = [
   { value: "30d", label: "Last 30 days" },
   { value: "90d", label: "Last 90 days" },
   { value: "365d", label: "Last 365 days" },
+];
+
+const DISPATCH_OPTIONS: { value: OrderDispatchBy; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "overdue", label: "Overdue" },
+  { value: "today", label: "Today" },
+  { value: "tomorrow", label: "Tomorrow" },
+  { value: "week", label: "Within a week" },
+  { value: "none", label: "No estimate" },
 ];
 
 const DELIVERY_OPTIONS: { value: OrderDelivery; label: string }[] = [
@@ -169,6 +179,19 @@ export function OrderFilters({
             current={filters.dateRange}
             label={o.label}
             onChange={(v) => onChange({ dateRange: v })}
+          />
+        ))}
+      </Group>
+
+      <Group title="Dispatch by date">
+        {DISPATCH_OPTIONS.map((o) => (
+          <Radio
+            key={o.value}
+            name="dispatchBy"
+            value={o.value}
+            current={filters.dispatchBy}
+            label={o.label}
+            onChange={(v) => onChange({ dispatchBy: v })}
           />
         ))}
       </Group>
