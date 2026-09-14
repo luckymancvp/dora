@@ -33,8 +33,9 @@ export function BoardCell({
   aiTrigger: number;
   onDismiss: () => void;
 }) {
-  // Đóng sẵn để vào bảng là thấy ngay khung tin nhắn; mở lại bằng nút trên header.
-  const [infoOpen, setInfoOpen] = useState(false);
+  // Mở sẵn panel đơn hàng để vào bảng là thấy ngay khối "Cập nhật đơn" (Sheet → Mera);
+  // đóng bằng nút ⓘ trên header. Chỉ áp cho Board — Messages (ChatPanel) vẫn đóng sẵn.
+  const [infoOpen, setInfoOpen] = useState(true);
   const [notesOpen, setNotesOpen] = useState(false);
 
   return (

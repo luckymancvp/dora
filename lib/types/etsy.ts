@@ -1,4 +1,5 @@
 import type { ObjectId } from "mongodb";
+import type { PresetKey } from "@/lib/dashboard/date-presets";
 
 /**
  * Raw Etsy payload — giữ nguyên dạng tự do để đảm bảo chính xác.
@@ -167,7 +168,54 @@ export interface ConversationFilters {
   sheetStatuses: string[];
   /** Thứ tự sắp xếp theo thời gian tin nhắn cuối. "asc" = cũ nhất trước. */
   sort: "asc" | "desc";
+  /**
+   * Preset thời gian đang chọn — CHỈ phục vụ UI (highlight nút, nhãn lịch).
+   * KHÔNG serialize thành query param: from/to đã quyết định hoàn toàn kết quả.
+   */
+  datePreset: PresetKey;
+  /**
+   * Mốc đầu khoảng lọc `lastMessageDate` (unix giây). null = không giới hạn.
+   * BẮT BUỘC là giá trị đã SNAPSHOT (tính 1 lần trong event handler / initializer
+   * của useState), KHÔNG được tính lại trong thân render: rangeForPreset() đọc
+   * Date.now() nên nếu tính mỗi lần render thì queryKey đổi liên tục → refetch vô hạn.
+   */
+  from: number | null;
+  /** Mốc cuối khoảng lọc `lastMessageDate` (unix giây). null = không giới hạn. Cùng quy tắc snapshot như `from`. */
+  to: number | null;
+  /**
+   * Chỉ lấy hội thoại có `etsy.message_count` < giá trị này. null = không lọc.
+   * Lọc ở SERVER (không phải client) để `total` khớp đúng tập người dùng thấy.
+   */
+  maxMessages: number | null;
+  /**
+   * Chỉ lấy hội thoại đã chờ ≥ N giờ (lastMessageDate <= now - N*3600). null = không lọc.
+   * Gửi nguyên N (số nguyên, ổn định) — server tự tính mốc cutoff theo giờ server,
+   * nhờ vậy KHÔNG có giá trị phụ thuộc Date.now() nằm trong queryKey.
+   */
+  waitingHours: number | null;
 }
+
+/**
+ * Baseline bộ lọc hội thoại: rỗng + All Time. Dùng để spread rồi override, nhờ đó
+ * thêm field mới vào ConversationFilters không làm hỏng các nơi dựng filter.
+ * KHÔNG chứa giá trị phụ thuộc thời gian → an toàn khi đặt ở module scope.
+ */
+export const DEFAULT_CONVERSATION_FILTERS: ConversationFilters = {
+  search: "",
+  notReplied: false,
+  hasOrder: false,
+  orderHelp: false,
+  hasNote: false,
+  shopIds: [],
+  tags: [],
+  sheetStatuses: [],
+  sort: "desc",
+  datePreset: "all",
+  from: null,
+  to: null,
+  maxMessages: null,
+  waitingHours: null,
+};
 
 /** 1 ghi chú trả về client (đã join tên/avatar tác giả). */
 export interface NoteItem {
@@ -210,6 +258,13 @@ export interface TagStatsResponse {
 export interface ConversationListResponse {
   items: ConversationListItem[];
   nextCursor: string | null;
+  /**
+   * Tổng số hội thoại khớp BỘ LỌC (không gồm clause cursor) — mẫu số thật cho UI.
+   * CHỈ được tính ở trang ĐẦU (request không có `cursor`); các trang sau trả `null`
+   * để không đánh countDocuments lặp lại với cùng một filter.
+   * → Consumer PHẢI đọc total ở trang đầu: `data.pages[0]?.total`.
+   */
+  total: number | null;
 }
 
 /** 1 ảnh khách upload ("Your Photo") cho 1 transaction (etsy personalization file). */

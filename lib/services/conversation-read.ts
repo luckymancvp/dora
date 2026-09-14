@@ -87,6 +87,13 @@ export interface ConversationFilterOpts {
   tags?: string[];
   sheetStatuses?: string[];
   sort?: "asc" | "desc";
+  /** Khoảng lastMessageDate (unix giây). null/undefined = không giới hạn. */
+  from?: number | null;
+  to?: number | null;
+  /** Chỉ lấy hội thoại có etsy.message_count < maxMessages. */
+  maxMessages?: number | null;
+  /** Đã chờ ≥ N giờ; cutoff tính bằng GIỜ SERVER tại thời điểm request. */
+  waitingHours?: number | null;
 }
 
 export async function getConversations(
@@ -100,19 +107,21 @@ export async function getConversations(
 
   const asc = opts.sort === "asc";
   const cursor = decodeCursor(opts.cursor ?? null);
-  if (cursor) {
-    clauses.push({
-      $or: asc
-        ? [
-            { lastMessageDate: { $gt: cursor.d } },
-            { lastMessageDate: cursor.d, _id: { $gt: new ObjectId(cursor.id) } },
-          ]
-        : [
-            { lastMessageDate: { $lt: cursor.d } },
-            { lastMessageDate: cursor.d, _id: { $lt: new ObjectId(cursor.id) } },
-          ],
-    });
-  }
+  // Cursor KHÔNG nằm trong `clauses`: nó là con trỏ phân trang, không phải điều kiện lọc.
+  // Tách riêng để `total` (countDocuments) đếm trên đúng bộ lọc, không giảm dần theo trang.
+  const cursorClause: Record<string, unknown> | null = cursor
+    ? {
+        $or: asc
+          ? [
+              { lastMessageDate: { $gt: cursor.d } },
+              { lastMessageDate: cursor.d, _id: { $gt: new ObjectId(cursor.id) } },
+            ]
+          : [
+              { lastMessageDate: { $lt: cursor.d } },
+              { lastMessageDate: cursor.d, _id: { $lt: new ObjectId(cursor.id) } },
+            ],
+      }
+    : null;
 
   // Tìm theo tên / nội dung tin nhắn / số đơn hàng (auto-detect, xem search.ts).
   const search = opts.search?.trim();
@@ -124,6 +133,34 @@ export async function getConversations(
       // Có search nhưng không khớp gì → trả rỗng (tránh hiện toàn bộ danh sách).
       clauses.push({ _id: null });
     }
+  }
+
+  // Khoảng thời gian tin nhắn cuối — CÙNG semantics buildBaseMatch() của analytics.ts
+  // (lastMessageDate $gte from / $lte to) để Board và Dashboard ra cùng một con số.
+  const dateRange: Record<string, number> = {};
+  if (typeof opts.from === "number" && Number.isFinite(opts.from)) dateRange.$gte = opts.from;
+  if (typeof opts.to === "number" && Number.isFinite(opts.to)) dateRange.$lte = opts.to;
+  if (Object.keys(dateRange).length > 0) clauses.push({ lastMessageDate: dateRange });
+
+  // Dưới N tin nhắn. Nhánh `null` khớp CẢ doc thiếu field `etsy.message_count` — mirror
+  // `asNumber(...) ?? 0` trong mapConversation (client vẫn coi thiếu = 0 và giữ lại doc đó),
+  // nếu chỉ dùng $lt thì Mongo loại luôn doc thiếu field → lệch tập kết quả so với hiện tại.
+  if (typeof opts.maxMessages === "number" && opts.maxMessages > 0) {
+    clauses.push({
+      $or: [
+        { "etsy.message_count": { $lt: opts.maxMessages } },
+        { "etsy.message_count": null },
+      ],
+    });
+  }
+
+  // Chờ ≥ N giờ. Cutoff tính theo GIỜ SERVER tại request → client chỉ gửi nguyên N (ổn định),
+  // nhờ vậy không có giá trị dẫn xuất từ Date.now() lọt vào queryKey của TanStack.
+  // LƯU Ý: đây là clause RIÊNG, KHÔNG merge vào object dateRange ở trên — cả hai đều ràng buộc
+  // `lastMessageDate` nên merge sẽ ghi đè key và làm mất một trong hai điều kiện.
+  if (typeof opts.waitingHours === "number" && opts.waitingHours > 0) {
+    const cutoff = Math.floor(Date.now() / 1000) - opts.waitingHours * 3600;
+    clauses.push({ lastMessageDate: { $lte: cutoff } });
   }
 
   // Help request
@@ -160,16 +197,28 @@ export async function getConversations(
     clauses.push({ sheetStatuses: { $in: opts.sheetStatuses } });
   }
 
-  const filter: Filter<ConversationDoc> =
+  // Hai filter: bản KHÔNG cursor để đếm tổng, bản CÓ cursor để lấy trang hiện tại.
+  const filterNoCursor: Filter<ConversationDoc> =
     clauses.length > 0 ? ({ $and: clauses } as Filter<ConversationDoc>) : {};
+  const filter: Filter<ConversationDoc> = cursorClause
+    ? ({ $and: [...clauses, cursorClause] } as Filter<ConversationDoc>)
+    : filterNoCursor;
 
   // limit+1 để biết còn trang sau không.
   const sortDir = asc ? 1 : -1;
-  const docs = (await coll
-    .find(filter, { projection: LIST_PROJECTION })
-    .sort({ lastMessageDate: sortDir, _id: sortDir })
-    .limit(limit + 1)
-    .toArray()) as WithId<ConversationDoc>[];
+  // Count CHỈ ở trang đầu (cursor == null): các trang sau đếm lại cùng một filter cho cùng
+  // một kết quả — thuần chi phí (filter có $or/$nin/$in trên field chưa index nên phải quét).
+  // Chạy song song với find để không cộng dồn latency.
+  const [docs, total] = await Promise.all([
+    coll
+      .find(filter, { projection: LIST_PROJECTION })
+      .sort({ lastMessageDate: sortDir, _id: sortDir })
+      .limit(limit + 1)
+      .toArray() as Promise<WithId<ConversationDoc>[]>,
+    cursorClause
+      ? Promise.resolve<number | null>(null)
+      : coll.countDocuments(filterNoCursor),
+  ]);
 
   const hasMore = docs.length > limit;
   const page = hasMore ? docs.slice(0, limit) : docs;
@@ -180,5 +229,5 @@ export async function getConversations(
       ? encodeCursor({ d: last.lastMessageDate ?? 0, id: last._id.toHexString() })
       : null;
 
-  return { items: page.map(mapConversation), nextCursor };
+  return { items: page.map(mapConversation), nextCursor, total };
 }
