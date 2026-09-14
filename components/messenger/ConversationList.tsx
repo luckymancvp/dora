@@ -11,7 +11,11 @@ import { TagFilter } from "@/components/messenger/TagFilter";
 import { SheetStatusFilter } from "@/components/messenger/SheetStatusFilter";
 import { FilterChip } from "@/components/messenger/FilterChip";
 import { useTabs } from "@/lib/store/tabs";
-import type { ConversationFilters, ConversationListItem } from "@/lib/types/etsy";
+import {
+  DEFAULT_CONVERSATION_FILTERS,
+  type ConversationFilters,
+  type ConversationListItem,
+} from "@/lib/types/etsy";
 import { tagClassName, tagLabel } from "@/lib/tags";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
@@ -116,8 +120,15 @@ export function ConversationList({ className }: { className?: string }) {
     return () => clearTimeout(t);
   }, [searchInput]);
 
+  // Spread baseline để from/to/maxMessages/waitingHours = null → sidebar giữ nguyên hành vi
+  // All Time như trước (bộ lọc ngày CỐ Ý chỉ có ở board). Cũng nhờ spread mà field mới thêm
+  // vào ConversationFilters sau này không làm vỡ build ở đây.
   const filters: ConversationFilters = useMemo(
-    () => ({ search, orderHelp, notReplied, hasOrder, hasNote, shopIds, tags: selectedTags, sheetStatuses: selectedSheetStatuses, sort }),
+    () => ({
+      ...DEFAULT_CONVERSATION_FILTERS,
+      search, orderHelp, notReplied, hasOrder, hasNote, shopIds,
+      tags: selectedTags, sheetStatuses: selectedSheetStatuses, sort,
+    }),
     [search, orderHelp, notReplied, hasOrder, hasNote, shopIds, selectedTags, selectedSheetStatuses, sort],
   );
 

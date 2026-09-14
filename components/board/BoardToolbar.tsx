@@ -17,6 +17,8 @@ import { ShopFilter } from "@/components/messenger/ShopFilter";
 import { TagFilter } from "@/components/messenger/TagFilter";
 import { SheetStatusFilter } from "@/components/messenger/SheetStatusFilter";
 import { FilterChip } from "@/components/messenger/FilterChip";
+import { DateRangeFilter } from "@/components/ui/DateRangeFilter";
+import type { DateRange, PresetKey } from "@/lib/dashboard/date-presets";
 import { Input } from "@/components/ui/input";
 import { MobileMenuButton } from "@/components/sidebar";
 import type { ConversationFilters } from "@/lib/types/etsy";
@@ -36,6 +38,7 @@ const PAGE_SIZES = [20, 50, 100];
 export function BoardToolbar({
   filters,
   onFiltersChange,
+  onDateChange,
   maxMessages,
   onMaxMessages,
   waitingHours,
@@ -60,6 +63,8 @@ export function BoardToolbar({
 }: {
   filters: ConversationFilters;
   onFiltersChange: (patch: Partial<ConversationFilters>) => void;
+  /** Đổi khoảng ngày (preset hoặc lịch tuỳ chỉnh) — vào bản soạn, chờ bấm "Lọc". */
+  onDateChange: (presetKey: PresetKey, range: DateRange) => void;
   maxMessages: number | null;
   onMaxMessages: (v: number | null) => void;
   waitingHours: number | null;
@@ -74,7 +79,8 @@ export function BoardToolbar({
   onClearDrafts: () => void;
   draftCount: number;
   shown: number;
-  total: number;
+  /** Tổng khớp bộ lọc từ SERVER; null khi chưa có trang đầu (xem ConversationListResponse.total). */
+  total: number | null;
   loading: boolean;
   onGenerateAllAI: () => void;
   aiGen: BoardAIGenState;
@@ -102,7 +108,10 @@ export function BoardToolbar({
         <h1 className="text-xl font-medium tracking-tight text-foreground">Bảng xử lý</h1>
         <span className="text-sm text-muted-foreground">
           Hiện <span className="font-bold text-foreground">{shown}</span>
-          {total !== shown && <> / {total}</>} hội thoại
+          {/* Chỉ hiện mẫu số khi THẬT SỰ còn cái chưa render. `shown` có thể lớn hơn
+              `total` vì retainedItems giữ lại hội thoại vừa trả lời (server đã loại
+              khỏi count) — khi đó "Hiện 22 / 17" là vô nghĩa, giấu mẫu số đi. */}
+          {total != null && total > shown && <> / {total}</>} hội thoại khớp bộ lọc
           {loading && <Loader2 className="ml-1 inline h-3.5 w-3.5 animate-spin" />}
         </span>
 
@@ -214,8 +223,15 @@ export function BoardToolbar({
         </div>
       </div>
 
-      {/* Hàng 3: lọc client */}
+      {/* Hàng 3: khoảng ngày + ngưỡng số (tất cả lọc ở server) */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+        {/* Dùng lại đúng bộ lọc thời gian của Dashboard → hai trang cùng semantics khoảng ngày. */}
+        <DateRangeFilter
+          presetKey={filters.datePreset}
+          range={{ from: filters.from, to: filters.to }}
+          onChange={onDateChange}
+          className="gap-1.5"
+        />
         <label className="flex items-center gap-1.5 text-muted-foreground">
           Dưới
           <input

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { DashboardDateFilter } from "@/components/dashboard/DashboardDateFilter";
+import { DateRangeFilter } from "@/components/ui/DateRangeFilter";
 import { MessageOverview } from "@/components/dashboard/MessageOverview";
 import { ShopAnalytics } from "@/components/dashboard/ShopAnalytics";
 import { AgentPerformance } from "@/components/dashboard/AgentPerformance";
@@ -38,7 +38,7 @@ export default function DashboardPage() {
               <p className="mt-1 text-sm text-muted-foreground">Tổng quan tin nhắn &amp; năng suất</p>
             </div>
           </div>
-          <DashboardDateFilter presetKey={presetKey} range={range} onChange={handleChange} />
+          <DateRangeFilter presetKey={presetKey} range={range} onChange={handleChange} />
         </div>
 
         {/* Lưới panel */}

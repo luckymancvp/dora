@@ -5,7 +5,12 @@ import { useConversations } from "@/lib/hooks/useConversations";
 import { useBoardDispatch } from "@/lib/hooks/useBoardDispatch";
 import { BoardToolbar } from "@/components/board/BoardToolbar";
 import { BoardCell, type CellStatus } from "@/components/board/BoardCell";
-import type { ConversationFilters, ConversationListItem } from "@/lib/types/etsy";
+import { rangeForPreset, type DateRange, type PresetKey } from "@/lib/dashboard/date-presets";
+import {
+  DEFAULT_CONVERSATION_FILTERS,
+  type ConversationFilters,
+  type ConversationListItem,
+} from "@/lib/types/etsy";
 
 // Trần cứng số ô render để tránh treo trình duyệt dù chọn page size lớn.
 const HARD_CAP = 100;
@@ -13,27 +18,36 @@ const HARD_CAP = 100;
 const AI_STAGGER_MS = 400;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-const DEFAULT_FILTERS: ConversationFilters = {
-  search: "",
-  notReplied: true, // mặc định: chỉ hiện hội thoại chưa trả lời
-  hasOrder: false,
-  orderHelp: false,
-  hasNote: false,
-  shopIds: [],
-  tags: [],
-  sheetStatuses: [],
-  sort: "asc", // mặc định: chờ lâu nhất lên đầu
-};
+/**
+ * Bộ lọc mặc định của board: chưa trả lời + cũ nhất trước + 7 NGÀY (khớp Dashboard,
+ * vốn cũng mặc định preset "7days") để hai trang ra cùng một con số.
+ *
+ * Là FUNCTION chứ không phải const module-scope: rangeForPreset() đọc Date.now(), nếu
+ * đặt ở module scope thì khoảng bị đóng băng ở lần load module đầu tiên (đứng yên qua
+ * nhiều giờ mở tab). Hàm này chỉ được gọi làm LAZY INITIALIZER của useState → snapshot
+ * đúng 1 lần mỗi lần mount.
+ */
+function makeDefaultFilters(): ConversationFilters {
+  return {
+    ...DEFAULT_CONVERSATION_FILTERS,
+    notReplied: true, // mặc định: chỉ hiện hội thoại chưa trả lời
+    sort: "asc", // mặc định: chờ lâu nhất lên đầu
+    datePreset: "7days",
+    ...rangeForPreset("7days"),
+  };
+}
 
 export default function BoardPage() {
+  // Snapshot khoảng ngày MỘT LẦN mỗi mount (lazy initializer: truyền hàm, KHÔNG gọi hàm).
+  // Dùng CÙNG MỘT object cho cả applied lẫn draft → filtersDirty = false lúc mount; nếu gọi
+  // makeDefaultFilters() hai lần thì hai mốc `to` có thể lệch 1 giây và nút "Lọc" sáng vô cớ.
+  const [initialFilters] = useState<ConversationFilters>(makeDefaultFilters);
   // Bộ lọc ĐÃ ÁP DỤNG — điều khiển truy vấn + render. Chỉ đổi khi bấm "Lọc".
-  const [filters, setFilters] = useState<ConversationFilters>(DEFAULT_FILTERS);
-  const [maxMessages, setMaxMessages] = useState<number | null>(null);
-  const [waitingHours, setWaitingHours] = useState<number | null>(null);
+  const [filters, setFilters] = useState<ConversationFilters>(initialFilters);
   // Bộ lọc ĐANG SOẠN — người dùng chỉnh trên toolbar, chưa áp dụng tới khi bấm "Lọc".
-  const [draftFilters, setDraftFilters] = useState<ConversationFilters>(DEFAULT_FILTERS);
-  const [draftMaxMessages, setDraftMaxMessages] = useState<number | null>(null);
-  const [draftWaitingHours, setDraftWaitingHours] = useState<number | null>(null);
+  // maxMessages/waitingHours đã nằm TRONG ConversationFilters (lọc ở server) nên không
+  // còn state riêng: chúng tự đi theo cặp draft/applied và tự vào filtersDirty.
+  const [draftFilters, setDraftFilters] = useState<ConversationFilters>(initialFilters);
   const [columns, setColumns] = useState(2);
   const [pageSize, setPageSize] = useState(20);
 
@@ -51,19 +65,31 @@ export default function BoardPage() {
     [],
   );
 
-  // Đã chỉnh nhưng chưa áp dụng → còn "bẩn", cần bấm Lọc.
-  const filtersDirty =
-    JSON.stringify(draftFilters) !== JSON.stringify(filters) ||
-    draftMaxMessages !== maxMessages ||
-    draftWaitingHours !== waitingHours;
+  // Hai ô số vẫn giữ signature (number | null) của toolbar — chỉ nối vào draft filters.
+  const onMaxMessages = useCallback(
+    (v: number | null) => setDraftFilters((f) => ({ ...f, maxMessages: v })),
+    [],
+  );
+  const onWaitingHours = useCallback(
+    (v: number | null) => setDraftFilters((f) => ({ ...f, waitingHours: v })),
+    [],
+  );
 
-  const applyFilters = useCallback(() => {
-    setFilters(draftFilters);
-    setMaxMessages(draftMaxMessages);
-    setWaitingHours(draftWaitingHours);
-  }, [draftFilters, draftMaxMessages, draftWaitingHours]);
+  // Đổi khoảng ngày → chỉ vào BẢN SOẠN. Đây là event handler người dùng, là nơi DUY NHẤT
+  // (ngoài makeDefaultFilters) được phép sinh mốc thời gian mới: rangeForPreset() do chính
+  // DateRangeFilter gọi khi bấm preset, kết quả đưa vào đây rồi đứng yên tới lần bấm sau.
+  const onDateChange = useCallback((key: PresetKey, r: DateRange) => {
+    setDraftFilters((f) => ({ ...f, datePreset: key, from: r.from, to: r.to }));
+  }, []);
 
-  const { items, hasNextPage, isFetchingNextPage, fetchNextPage, isLoading } =
+  // Đã chỉnh nhưng chưa áp dụng → còn "bẩn", cần bấm Lọc. Nay bao trọn cả khoảng ngày,
+  // maxMessages và waitingHours vì cả ba đã nằm trong ConversationFilters.
+  const filtersDirty = JSON.stringify(draftFilters) !== JSON.stringify(filters);
+
+  // Chỉ copy draft — TUYỆT ĐỐI không đọc lại Date.now() ở đây.
+  const applyFilters = useCallback(() => setFilters(draftFilters), [draftFilters]);
+
+  const { items, total, hasNextPage, isFetchingNextPage, fetchNextPage, isLoading } =
     useConversations(filters);
 
   // --- Giữ lại hội thoại đã hiển thị trong phiên lọc hiện tại ---
@@ -109,26 +135,21 @@ export default function BoardPage() {
     [retainOrder, items],
   );
 
-  // Lọc client: số tin nhắn + thời gian chờ.
-  const filtered = useMemo(() => {
-    const now = Date.now();
-    return retainedItems.filter((c) => {
-      if (dismissed.has(c.conversationId)) return false;
-      if (maxMessages != null && !(c.messageCount < maxMessages)) return false;
-      if (waitingHours != null) {
-        const ageH = (now - c.lastMessageDate * 1000) / 3_600_000;
-        if (ageH < waitingHours) return false;
-      }
-      return true;
-    });
-  }, [retainedItems, maxMessages, waitingHours, dismissed]);
+  // Lọc client CHỈ còn hội thoại người dùng bấm X (thuần client, server không biết).
+  // maxMessages/waitingHours đã đẩy xuống Mongo để mẫu số `total` (server) và tập hiển thị
+  // (client) là CÙNG một tập — đúng bug mẫu số > tử số mà lượt này đi sửa.
+  const filtered = useMemo(
+    () => retainedItems.filter((c) => !dismissed.has(c.conversationId)),
+    [retainedItems, dismissed],
+  );
 
   const limit = Math.min(pageSize, HARD_CAP);
   const cells = filtered.slice(0, limit);
   const overflow = filtered.length - cells.length;
 
-  // Tự nạp thêm trang cho tới khi đủ số ô của page size (bộ lọc client có thể
-  // loại bớt nên dựa trên số đã lọc), dừng khi hết trang.
+  // Tự nạp thêm trang cho tới khi đủ số ô của page size (dismissed có thể loại bớt nên
+  // dựa trên số đã lọc), dừng khi hết trang. Nay hội tụ nhanh hơn vì maxMessages/
+  // waitingHours lọc ở server → server không còn trả item mà client sẽ loại.
   useEffect(() => {
     if (filtered.length < limit && hasNextPage && !isFetchingNextPage) {
       fetchNextPage();
@@ -208,10 +229,11 @@ export default function BoardPage() {
       <BoardToolbar
         filters={draftFilters}
         onFiltersChange={onFiltersChange}
-        maxMessages={draftMaxMessages}
-        onMaxMessages={setDraftMaxMessages}
-        waitingHours={draftWaitingHours}
-        onWaitingHours={setDraftWaitingHours}
+        onDateChange={onDateChange}
+        maxMessages={draftFilters.maxMessages}
+        onMaxMessages={onMaxMessages}
+        waitingHours={draftFilters.waitingHours}
+        onWaitingHours={onWaitingHours}
         onApply={applyFilters}
         filtersDirty={filtersDirty}
         columns={columns}
@@ -222,7 +244,7 @@ export default function BoardPage() {
         onClearDrafts={clearDrafts}
         draftCount={draftCount}
         shown={cells.length}
-        total={filtered.length}
+        total={total}
         loading={isLoading || isFetchingNextPage}
         onGenerateAllAI={generateAllAI}
         aiGen={aiGen}
