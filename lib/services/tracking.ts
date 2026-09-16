@@ -340,15 +340,19 @@ function classifyVerify(o: TrackingJobOrder, list: ShipmentResultItem[]): Verify
     carrier_name: bestCarrier,
   };
 
-  // 3a. Mã khớp nhưng không shipment nào khớp carrier → add nhầm carrier.
+  /*
+   * 3a. Mã khớp nhưng tên carrier khác. ĐÂY KHÔNG PHẢI LỖI: tracking đã vào Etsy rồi.
+   * Etsy tự chuẩn hoá tên carrier về danh mục của nó ("4PX Express" → "4PX Worldwide
+   * Express", "DHL Ecommerce" → "DHL Global Mail"), nên lệch tên là chuyện bình thường.
+   * Câu chữ phải nói rõ "đã nhận" trước, chi tiết lệch sau — UI tô vàng, không tô đỏ.
+   */
   if (!carrierMatches(o.other_carrier, bestCarrier)) {
     return {
       verify: "CARRIER_MISMATCH",
       // Carrier rỗng ≠ carrier khác: Etsy không ghi nhận carrier nào cho shipment này.
-      // Nói đúng bản chất để người vận hành biết phải mở đơn xem, thay vì đi tìm hãng tên "?".
       message: bestCarrier.trim()
-        ? `Mã tracking khớp nhưng carrier lệch — đã gửi "${o.other_carrier}", Etsy ghi "${bestCarrier.trim()}"`
-        : `Mã tracking khớp nhưng Etsy KHÔNG ghi nhận carrier nào — đã gửi "${o.other_carrier}"`,
+        ? `Etsy đã nhận tracking ${best.tracking_code} nhưng ghi carrier là "${bestCarrier.trim()}" (đã gửi "${o.other_carrier}") — Etsy dùng tên trong danh mục của nó`
+        : `Etsy đã nhận tracking ${best.tracking_code} nhưng KHÔNG ghi carrier nào (đã gửi "${o.other_carrier}")`,
       verified,
     };
   }

@@ -17,6 +17,7 @@ import { useTrackingHistory, useTrackingJob } from "@/lib/hooks/useTrackingHisto
 import {
   carrierLabel,
   isVerifyFailure,
+  isVerifyWarning,
   VERIFY_LABEL,
   type TrackingHistoryItem,
   type TrackingJobOrder,
@@ -236,6 +237,13 @@ function CountBadges({ counts }: { counts: TrackingHistoryItem["counts"] }) {
           {counts.verified} xác minh
         </span>
       )}
+      {/* CẢNH BÁO, không phải lỗi: các đơn này ĐÃ nằm trong `verified` ở trên — Etsy nhận
+          tracking rồi, chỉ ghi tên carrier theo danh mục của nó. Badge vàng, không cộng thêm. */}
+      {counts.carrier_mismatch > 0 && (
+        <span className="rounded-full bg-warning/15 px-2 py-0.5 text-xs font-medium text-warning">
+          {counts.carrier_mismatch} đổi tên carrier
+        </span>
+      )}
       {counts.mismatch > 0 && (
         <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-medium text-destructive">
           {counts.mismatch} lệch
@@ -330,15 +338,20 @@ function EtsyEcho({ value }: { value?: TrackingValue }) {
 }
 
 /**
- * Cell cho MỌI ca xác minh không đạt + ca add lỗi. Dùng CHUNG giữa tab Lịch sử
- * (ResultCell) và job đang chạy (OrderStatusCell ở app/tracking/page.tsx) để hai nơi
- * mô tả cùng một đơn giống hệt nhau. Thành/bại suy 100% từ `o.verify`.
+ * Cell cho mọi ca verify CÓ CHUYỆN ĐỂ NÓI — lỗi thật (đỏ) lẫn cảnh báo (vàng).
+ * Dùng CHUNG giữa tab Lịch sử (ResultCell) và job đang chạy (OrderStatusCell ở
+ * app/tracking/page.tsx) để hai nơi mô tả cùng một đơn giống hệt nhau.
+ *
+ * Tông màu suy 100% từ `o.verify`: CARRIER_MISMATCH là add THÀNH CÔNG (Etsy chỉ đổi tên
+ * carrier) nên phải vàng — tô đỏ khiến người vận hành tưởng tracking chưa vào Etsy.
  */
-export function VerifyFailureCell({ order: o }: { order: TrackingJobOrder }) {
-  const label = isVerifyFailure(o.verify) ? VERIFY_LABEL[o.verify] : "Add thất bại";
+export function VerifyIssueCell({ order: o }: { order: TrackingJobOrder }) {
+  const warn = isVerifyWarning(o.verify);
+  const label = isVerifyFailure(o.verify) || warn ? VERIFY_LABEL[o.verify] : "Add thất bại";
+  const Icon = warn ? AlertTriangle : XCircle;
   return (
-    <span className="inline-flex items-start gap-1 text-destructive">
-      <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+    <span className={`inline-flex items-start gap-1 ${warn ? "text-warning" : "text-destructive"}`}>
+      <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
       <span>
         <strong className="font-medium">{label}</strong>
         {o.message && <span className="block text-xs text-muted-foreground">{o.message}</span>}
@@ -361,9 +374,9 @@ function ResultCell({ order: o }: { order: TrackingJobOrder }) {
       </span>
     );
   }
-  // Gồm cả 3 ca mới lẫn giá trị legacy "MISMATCH" của lượt add cũ trong Mongo.
-  if (isVerifyFailure(o.verify) || o.add_status === "FAILED") {
-    return <VerifyFailureCell order={o} />;
+  // Lỗi thật (đỏ) + cảnh báo carrier lệch (vàng) + ca add lỗi, gồm cả legacy "MISMATCH".
+  if (isVerifyFailure(o.verify) || isVerifyWarning(o.verify) || o.add_status === "FAILED") {
+    return <VerifyIssueCell order={o} />;
   }
   if (o.precheck === "EXISTS" && !o.selected) {
     return (
