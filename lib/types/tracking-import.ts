@@ -150,11 +150,10 @@ export function countSkipReasons(
     .sort((a, b) => b.count - a.count);
 }
 
-/** Gom các dòng ELIGIBLE theo store, shop suy được xếp trước, nhóm "chưa rõ" xuống cuối. */
-export function groupEligibleByStore(rows: ImportCheckedRow[]): ImportStoreGroup[] {
+/** Gom theo store + sắp xếp: shop suy được xếp trước, nhóm "chưa rõ" xuống cuối. */
+function groupByStore(rows: ImportCheckedRow[]): ImportStoreGroup[] {
   const byStore = new Map<string, ImportCheckedRow[]>();
   for (const r of rows) {
-    if (r.state !== "ELIGIBLE") continue;
     const key = r.store.trim();
     const list = byStore.get(key);
     if (list) list.push(r);
@@ -167,6 +166,23 @@ export function groupEligibleByStore(rows: ImportCheckedRow[]): ImportStoreGroup
       if (!a.store !== !b.store) return a.store ? -1 : 1;
       return a.store.localeCompare(b.store);
     });
+}
+
+/**
+ * Gom MỌI dòng có dữ liệu dùng được theo store. Dùng cho CẢ HAI lối vào:
+ *   - nút "Phân loại shop" ở tab Add (dán text)
+ *   - panel Import file, sau khi người dùng tự tick chọn dòng
+ *
+ * CỐ Ý không lọc theo trạng thái đơn: phân loại shop là việc xếp đơn về đúng shop, không
+ * phải việc quyết định đơn nào được add — người dùng tự quyết bằng ô tick. Trước đây có
+ * bản `groupEligibleByStore` khoá cứng PROCESSING, đã bỏ vì chặn mất đơn hợp lệ.
+ *
+ * Vẫn bỏ INVALID vì đó không phải chuyện trạng thái mà là dòng KHÔNG dùng được: thiếu
+ * order id / tracking / carrier, hoặc trùng đơn với dòng trên (backend cũng không tra
+ * shop cho các dòng này, `store` luôn rỗng).
+ */
+export function groupAddableByStore(rows: ImportCheckedRow[]): ImportStoreGroup[] {
+  return groupByStore(rows.filter((r) => r.state !== "INVALID"));
 }
 
 // ---- Bước 3: tra status ----

@@ -16,9 +16,12 @@ import { useShops } from "@/lib/hooks/useShops";
 import { useTrackingHistory, useTrackingJob } from "@/lib/hooks/useTrackingHistory";
 import {
   carrierLabel,
+  isVerifyFailure,
+  VERIFY_LABEL,
   type TrackingHistoryItem,
   type TrackingJobOrder,
   type TrackingPhase,
+  type TrackingValue,
 } from "@/lib/types/tracking";
 
 const PAGE_SIZE = 20;
@@ -313,6 +316,38 @@ function HistoryDetail({ id, error }: { id: string; error?: string }) {
   );
 }
 
+/**
+ * Giá trị Etsy ĐANG CÓ cho đơn này — để đối chiếu ngay trên bảng với cái đã gửi
+ * (cột Tracking + cột Carrier của chính dòng đó).
+ */
+function EtsyEcho({ value }: { value?: TrackingValue }) {
+  if (!value) return null;
+  const parts = [value.code?.trim(), value.carrier_name?.trim()].filter(Boolean) as string[];
+  if (parts.length === 0) return null;
+  return (
+    <span className="block text-xs text-muted-foreground">Etsy đang có: {parts.join(" · ")}</span>
+  );
+}
+
+/**
+ * Cell cho MỌI ca xác minh không đạt + ca add lỗi. Dùng CHUNG giữa tab Lịch sử
+ * (ResultCell) và job đang chạy (OrderStatusCell ở app/tracking/page.tsx) để hai nơi
+ * mô tả cùng một đơn giống hệt nhau. Thành/bại suy 100% từ `o.verify`.
+ */
+export function VerifyFailureCell({ order: o }: { order: TrackingJobOrder }) {
+  const label = isVerifyFailure(o.verify) ? VERIFY_LABEL[o.verify] : "Add thất bại";
+  return (
+    <span className="inline-flex items-start gap-1 text-destructive">
+      <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <span>
+        <strong className="font-medium">{label}</strong>
+        {o.message && <span className="block text-xs text-muted-foreground">{o.message}</span>}
+        <EtsyEcho value={o.verified} />
+      </span>
+    </span>
+  );
+}
+
 /** Trạng thái kết quả read-only 1 đơn (rút gọn từ OrderStatusCell của JobCard). */
 function ResultCell({ order: o }: { order: TrackingJobOrder }) {
   if (!o.selected && o.verify === "SKIPPED") {
@@ -320,25 +355,36 @@ function ResultCell({ order: o }: { order: TrackingJobOrder }) {
   }
   if (o.verify === "VERIFIED") {
     return (
-      <span className="inline-flex items-center gap-1 text-success">
-        <CheckCircle2 className="h-3.5 w-3.5" /> Đã add &amp; xác minh
+      <span className="inline-flex items-start gap-1 text-success">
+        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        {VERIFY_LABEL.VERIFIED}
       </span>
     );
   }
-  if (o.verify === "MISMATCH" || o.add_status === "FAILED") {
-    return (
-      <span className="inline-flex items-center gap-1 text-destructive">
-        <XCircle className="h-3.5 w-3.5" />
-        {o.message ?? "Thất bại"}
-        {o.verified?.code ? ` (Etsy: ${o.verified.code})` : ""}
-      </span>
-    );
+  // Gồm cả 3 ca mới lẫn giá trị legacy "MISMATCH" của lượt add cũ trong Mongo.
+  if (isVerifyFailure(o.verify) || o.add_status === "FAILED") {
+    return <VerifyFailureCell order={o} />;
   }
   if (o.precheck === "EXISTS" && !o.selected) {
     return (
       <span className="inline-flex items-center gap-1 text-warning">
         <AlertTriangle className="h-3.5 w-3.5" />
         Đã có sẵn — không add
+      </span>
+    );
+  }
+  // Đã add nhưng không verify được (GET lỗi / shop offline). Phải đứng trước nhánh
+  // add_status === "DONE", nếu không o.message bị nuốt và đơn hiện "Đã gửi" như bình thường.
+  if (o.verify === "SKIPPED" && o.selected) {
+    return (
+      <span className="inline-flex items-start gap-1 text-warning">
+        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>
+          {/* Không dùng VERIFY_LABEL.SKIPPED ("Bỏ qua"): đơn này ĐÃ add lên Etsy, chỉ là
+              không verify được. Gọi là "bỏ qua" sẽ bị hiểu nhầm thành chưa add. */}
+          Đã add nhưng CHƯA xác minh được
+          {o.message && <span className="block text-xs text-muted-foreground">{o.message}</span>}
+        </span>
       </span>
     );
   }

@@ -15,10 +15,72 @@ export type TrackingPhase =
 
 export type PrecheckState = "PENDING" | "CLEAR" | "EXISTS";
 export type AddStatus = "NEW" | "SENDING" | "DONE" | "FAILED";
-export type VerifyState = "PENDING" | "VERIFIED" | "MISMATCH" | "SKIPPED";
 
+/**
+ * Kết quả xác minh 1 đơn sau khi add (phase VERIFY).
+ *
+ * VERIFIED chỉ khi shipment Etsy trả về khớp CẢ HAI: mã tracking + carrier_name
+ * (so với other_carrier đã gửi). Trước đây chỉ so mã → đơn add sai carrier vẫn
+ * báo "đã xác minh" trong khi Etsy hiện "No tracking".
+ *
+ * Verify CỐ Ý không xét `is_shipped`: verify GET chạy chỉ vài giây sau POST add,
+ * không có bằng chứng Etsy kịp cập nhật `isShipped` trong khoảng đó, nên dùng nó
+ * làm điều kiện đạt/không đạt có nguy cơ báo động giả hàng loạt.
+ *
+ * Các trạng thái lỗi được TÁCH RIÊNG để người dùng biết phải sửa gì:
+ * - NOT_FOUND         : Etsy không trả shipment nào cho đơn → add không ăn.
+ * - CODE_MISMATCH     : Etsy có tracking nhưng mã khác mã đã gửi.
+ * - CARRIER_MISMATCH  : mã khớp nhưng carrier Etsy ghi khác tên đã gửi.
+ * - MISMATCH          : LEGACY — chỉ tồn tại trong job CŨ đã lưu trong MongoDB
+ *                       (lúc đó chưa tách 3 ca trên). KHÔNG ghi mới giá trị này.
+ * - SKIPPED           : không add (bỏ tick) hoặc add xong nhưng không verify được.
+ */
+export type VerifyState =
+  | "PENDING"
+  | "VERIFIED"
+  | "NOT_FOUND"
+  | "CODE_MISMATCH"
+  | "CARRIER_MISMATCH"
+  | "MISMATCH"
+  | "SKIPPED";
+
+/**
+ * Các VerifyState tính là "đơn có vấn đề sau khi add" (đã add nhưng không đạt
+ * xác minh). Dùng chung cho đếm counts và tô màu ở UI — thêm state mới CHỈ cần
+ * thêm vào đây, mọi nơi tự cập nhật.
+ */
+export const VERIFY_FAILURE_STATES = [
+  "NOT_FOUND",
+  "CODE_MISMATCH",
+  "CARRIER_MISMATCH",
+  "MISMATCH",
+] as const satisfies readonly VerifyState[];
+
+export type VerifyFailureState = (typeof VERIFY_FAILURE_STATES)[number];
+
+/** Đơn đã add nhưng xác minh KHÔNG đạt (gồm cả giá trị legacy MISMATCH). */
+export function isVerifyFailure(v: VerifyState): v is VerifyFailureState {
+  return (VERIFY_FAILURE_STATES as readonly VerifyState[]).includes(v);
+}
+
+/** Nhãn ngắn hiển thị badge/cột trạng thái. Record đủ mọi giá trị → thêm state mới là lỗi compile. */
+export const VERIFY_LABEL: Record<VerifyState, string> = {
+  PENDING: "Chờ xác minh",
+  VERIFIED: "Đã add & xác minh",
+  NOT_FOUND: "Không thấy tracking trên Etsy",
+  CODE_MISMATCH: "Mã tracking lệch",
+  CARRIER_MISMATCH: "Carrier lệch",
+  MISMATCH: "Lệch tracking",
+  SKIPPED: "Bỏ qua",
+};
+
+/**
+ * Một cặp tracking (mã + carrier) đọc được từ Etsy.
+ * Dùng cho cả `existing` (pre-check) lẫn `verified` (sau khi add).
+ */
 export interface TrackingValue {
   code: string;
+  /** Tên carrier ĐÚNG NHƯ ETSY TRẢ VỀ (để đối chiếu với other_carrier đã gửi). */
   carrier_name: string;
 }
 
@@ -35,8 +97,13 @@ export interface TrackingJobOrder {
   selected: boolean;
   add_status: AddStatus;
   verify: VerifyState;
-  /** Tracking thực tế lấy lại sau khi add (bước verify). */
+  /**
+   * Tracking thực tế Etsy trả về sau khi add (bước verify) — nguồn đối chiếu.
+   * Khi verify != VERIFIED, đây là cái Etsy ĐANG CÓ (có thể gộp nhiều mã bằng ", ").
+   * Giá trị ĐÃ GỬI luôn nằm ở `tracking_number` + `other_carrier` của chính đơn này.
+   */
   verified?: TrackingValue;
+  /** Câu giải thích tiếng Việt cho người vận hành (nêu rõ giá trị gửi vs Etsy trả). */
   message?: string;
 }
 
@@ -75,14 +142,63 @@ export interface TrackingJobCounts {
   total: number;
   /** Số đơn đã chọn để add (selected = true). */
   selected: number;
-  /** verify === "VERIFIED". */
+  /** verify === "VERIFIED" (khớp cả mã + carrier). */
   verified: number;
-  /** verify === "MISMATCH". */
+  /**
+   * Tổng số đơn đã add nhưng xác minh KHÔNG đạt = isVerifyFailure(verify).
+   * Gộp cả 3 ca mới lẫn giá trị legacy "MISMATCH" của job cũ → badge "N lệch"
+   * hiện có KHÔNG vỡ khi xem lại lịch sử cũ.
+   */
   mismatch: number;
+  /** Chi tiết của `mismatch` — verify === "NOT_FOUND". */
+  not_found: number;
+  /** Chi tiết của `mismatch` — verify === "CODE_MISMATCH". */
+  code_mismatch: number;
+  /** Chi tiết của `mismatch` — verify === "CARRIER_MISMATCH". */
+  carrier_mismatch: number;
   /** add_status === "FAILED". */
   failed: number;
   /** verify === "SKIPPED" và add_status !== "FAILED" (bỏ qua xác minh). */
   skipped: number;
+}
+
+/**
+ * Field tối thiểu để đếm counts. Service dùng làm projection MongoDB (không kéo
+ * existing/verified/message nặng), page.tsx dùng luôn TrackingJobOrder (structural).
+ */
+export type TrackingOrderCountFields = Pick<
+  TrackingJobOrder,
+  "selected" | "verify" | "add_status"
+>;
+
+/**
+ * NGUỒN DUY NHẤT tính TrackingJobCounts — hàm thuần, không đụng DB, nên CẢ HAI
+ * phía dùng chung được:
+ *   - backend: `summarizeJob` trong lib/services/tracking.ts (list lịch sử)
+ *   - frontend: `JobCard.summary` trong app/tracking/page.tsx (job đang chạy)
+ * Ràng buộc "logic phải khớp 1:1" trước đây chỉ là comment nên dễ trôi; giờ khớp
+ * do dùng CHUNG hàm này. TUYỆT ĐỐI không copy lại logic đếm ở nơi khác.
+ *
+ * Lưu ý hiển thị: page.tsx in "Hoàn tất N đơn" với N = số đơn ĐÃ GỬI → dùng
+ * `counts.selected`, KHÔNG phải `counts.total` (= orders.length).
+ */
+export function summarizeTrackingOrders(
+  orders: readonly TrackingOrderCountFields[],
+): TrackingJobCounts {
+  const sent = orders.filter((o) => o.selected);
+  const countVerify = (v: VerifyState) => sent.filter((o) => o.verify === v).length;
+  return {
+    total: orders.length,
+    selected: sent.length,
+    verified: countVerify("VERIFIED"),
+    mismatch: sent.filter((o) => isVerifyFailure(o.verify)).length,
+    not_found: countVerify("NOT_FOUND"),
+    code_mismatch: countVerify("CODE_MISMATCH"),
+    carrier_mismatch: countVerify("CARRIER_MISMATCH"),
+    failed: sent.filter((o) => o.add_status === "FAILED").length,
+    // SKIPPED nhưng không phải do FAILED (đã tách failed ở trên) → "bỏ qua xác minh".
+    skipped: sent.filter((o) => o.verify === "SKIPPED" && o.add_status !== "FAILED").length,
+  };
 }
 
 /**
@@ -133,12 +249,22 @@ export interface TrackingOrderInput {
   carrier: string;
 }
 
-/** Shipment đã normalize do extension trả về (snake_case). */
+/**
+ * Shipment đã normalize do extension trả về (snake_case).
+ * SHAPE NÀY DO dora-extension QUYẾT ĐỊNH — KHÔNG được đổi từ phía dora-1.
+ */
 export interface ShipmentResultItem {
   order_id: string;
+  /** Mã tracking Etsy đang lưu — so với TrackingJobOrder.tracking_number. */
   tracking_code: string;
+  /** Tên carrier Etsy đang lưu — so với TrackingJobOrder.other_carrier. */
   carrier_name: string;
   tracking_url?: string;
+  /**
+   * Etsy đã đánh dấu đơn/shipment là đã ship chưa. Extension gửi lên (optional vì
+   * bản cũ có thể không có). Verify CỐ Ý KHÔNG dùng field này để quyết định đạt/không
+   * đạt — xem ghi chú ở VerifyState. Giữ lại vì đây là shape extension gửi.
+   */
   is_shipped?: boolean;
   is_delivered?: boolean;
 }
