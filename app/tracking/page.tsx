@@ -22,14 +22,15 @@ import {
 } from "lucide-react";
 import { useShops } from "@/lib/hooks/useShops";
 import { MobileMenuButton } from "@/components/sidebar";
-// VerifyFailureCell dùng chung với tab Lịch sử: job đang chạy và lịch sử phải nói GIỐNG HỆT nhau.
-import { HistorySection, VerifyFailureCell } from "@/components/tracking/HistorySection";
+// VerifyIssueCell dùng chung với tab Lịch sử: job đang chạy và lịch sử phải nói GIỐNG HỆT nhau.
+import { HistorySection, VerifyIssueCell } from "@/components/tracking/HistorySection";
 import { ImportPanel } from "@/components/tracking/ImportPanel";
 import { ImportProfilesSection } from "@/components/tracking/ImportProfilesSection";
 import { CarrierRulesSection } from "@/components/tracking/CarrierRulesSection";
 import {
   carrierLabel,
   isVerifyFailure,
+  isVerifyWarning,
   summarizeTrackingOrders,
   VERIFY_LABEL,
 } from "@/lib/types/tracking";
@@ -121,18 +122,18 @@ function missingFields(o: TrackingJobOrder): string[] {
 }
 
 /**
- * Chi tiết "vì sao chưa đạt xác minh" cho khối tóm tắt cuối job — tách rõ 3 ca thay vì
- * gộp hết thành "lệch tracking" như trước. Nhãn lấy từ VERIFY_LABEL (nguồn duy nhất).
- * Phần dư giữa `mismatch` và tổng 3 ca là đơn legacy "MISMATCH" của lượt add cũ.
+ * Chi tiết "vì sao THẤT BẠI" cho khối tóm tắt cuối job. CHỈ gồm ca lỗi thật — carrier
+ * lệch KHÔNG nằm đây vì đó là add thành công (đã đếm vào `verified`), báo riêng ở dòng
+ * cảnh báo vàng. Nhãn lấy từ VERIFY_LABEL (nguồn duy nhất).
+ * Phần dư giữa `mismatch` và tổng 2 ca là đơn legacy "MISMATCH" của lượt add cũ.
  */
 function failureBreakdown(c: TrackingJobCounts): string {
   const rows: [VerifyState, number][] = [
     ["NOT_FOUND", c.not_found],
     ["CODE_MISMATCH", c.code_mismatch],
-    ["CARRIER_MISMATCH", c.carrier_mismatch],
   ];
   const parts = rows.filter(([, n]) => n > 0).map(([s, n]) => `${VERIFY_LABEL[s]}: ${n}`);
-  const legacy = c.mismatch - c.not_found - c.code_mismatch - c.carrier_mismatch;
+  const legacy = c.mismatch - c.not_found - c.code_mismatch;
   if (legacy > 0) parts.push(`${VERIFY_LABEL.MISMATCH}: ${legacy}`);
   return parts.join(" · ");
 }
@@ -873,6 +874,14 @@ const JobCard = forwardRef<
             {summary.mismatch > 0 && (
               <p className="text-xs text-muted-foreground">{failureBreakdown(summary)}</p>
             )}
+            {/* Cảnh báo, KHÔNG phải lỗi: các đơn này đã nằm trong "{verified} đã xác minh"
+                ở trên. Etsy tự đổi tên carrier về danh mục của nó khi nhận tracking. */}
+            {summary.carrier_mismatch > 0 && (
+              <p className="text-xs text-warning">
+                {summary.carrier_mismatch} đơn Etsy ghi tên carrier khác tên đã gửi — tracking vẫn
+                vào bình thường, chỉ là Etsy dùng tên trong danh mục của nó.
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -1035,10 +1044,10 @@ function OrderStatusCell({ order: o, phase }: { order: TrackingJobOrder; phase: 
       </span>
     );
   }
-  // Mọi ca xác minh KHÔNG đạt (NOT_FOUND / CODE_MISMATCH / CARRIER_MISMATCH + legacy
-  // MISMATCH) và ca add lỗi đều đi qua cùng một cell với tab Lịch sử.
-  if (isVerifyFailure(o.verify) || o.add_status === "FAILED") {
-    return <VerifyFailureCell order={o} />;
+  // Lỗi thật (đỏ: NOT_FOUND / CODE_MISMATCH / legacy MISMATCH), cảnh báo carrier lệch
+  // (vàng) và ca add lỗi đều đi qua cùng một cell với tab Lịch sử.
+  if (isVerifyFailure(o.verify) || isVerifyWarning(o.verify) || o.add_status === "FAILED") {
+    return <VerifyIssueCell order={o} />;
   }
   // Đã add nhưng bước verify không chạy được (GET shipments lỗi / shop offline lúc verify).
   // PHẢI đứng trước nhánh add_status === "DONE": job đã COMPLETED nên poll đã dừng, nếu rơi

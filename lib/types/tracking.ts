@@ -27,10 +27,14 @@ export type AddStatus = "NEW" | "SENDING" | "DONE" | "FAILED";
  * không có bằng chứng Etsy kịp cập nhật `isShipped` trong khoảng đó, nên dùng nó
  * làm điều kiện đạt/không đạt có nguy cơ báo động giả hàng loạt.
  *
- * Các trạng thái lỗi được TÁCH RIÊNG để người dùng biết phải sửa gì:
- * - NOT_FOUND         : Etsy không trả shipment nào cho đơn → add không ăn.
- * - CODE_MISMATCH     : Etsy có tracking nhưng mã khác mã đã gửi.
- * - CARRIER_MISMATCH  : mã khớp nhưng carrier Etsy ghi khác tên đã gửi.
+ * Các trạng thái được TÁCH RIÊNG để người dùng biết phải làm gì:
+ * - NOT_FOUND         : LỖI — Etsy không trả shipment nào cho đơn → add không ăn.
+ * - CODE_MISMATCH     : LỖI — Etsy có tracking nhưng mã khác mã đã gửi.
+ * - CARRIER_MISMATCH  : CẢNH BÁO, KHÔNG PHẢI LỖI — mã khớp (tracking ĐÃ vào Etsy) nhưng
+ *                       Etsy ghi tên carrier khác. Etsy tự chuẩn hoá tên về danh mục của
+ *                       nó ("4PX Express" → "4PX Worldwide Express", "DHL Ecommerce" →
+ *                       "DHL Global Mail"), nên lệch tên là chuyện BÌNH THƯỜNG. Đơn vẫn
+ *                       tính là add thành công; chỉ hiện vàng để đối chiếu.
  * - MISMATCH          : LEGACY — chỉ tồn tại trong job CŨ đã lưu trong MongoDB
  *                       (lúc đó chưa tách 3 ca trên). KHÔNG ghi mới giá trị này.
  * - SKIPPED           : không add (bỏ tick) hoặc add xong nhưng không verify được.
@@ -45,22 +49,41 @@ export type VerifyState =
   | "SKIPPED";
 
 /**
- * Các VerifyState tính là "đơn có vấn đề sau khi add" (đã add nhưng không đạt
- * xác minh). Dùng chung cho đếm counts và tô màu ở UI — thêm state mới CHỈ cần
- * thêm vào đây, mọi nơi tự cập nhật.
+ * Các VerifyState là LỖI THẬT: tracking KHÔNG vào được Etsy như mong muốn.
+ * Dùng chung cho đếm counts và tô ĐỎ ở UI — thêm state mới CHỈ cần thêm vào đây.
+ *
+ * CARRIER_MISMATCH CỐ Ý không nằm ở đây: tracking đã vào Etsy, chỉ là Etsy ghi tên
+ * carrier theo danh mục của nó. Báo đỏ ca đó khiến người vận hành tưởng add hỏng.
  */
 export const VERIFY_FAILURE_STATES = [
   "NOT_FOUND",
   "CODE_MISMATCH",
-  "CARRIER_MISMATCH",
   "MISMATCH",
 ] as const satisfies readonly VerifyState[];
 
 export type VerifyFailureState = (typeof VERIFY_FAILURE_STATES)[number];
 
-/** Đơn đã add nhưng xác minh KHÔNG đạt (gồm cả giá trị legacy MISMATCH). */
+/** Đơn đã add nhưng tracking KHÔNG vào Etsy đúng (gồm cả giá trị legacy MISMATCH). */
 export function isVerifyFailure(v: VerifyState): v is VerifyFailureState {
   return (VERIFY_FAILURE_STATES as readonly VerifyState[]).includes(v);
+}
+
+/**
+ * Các VerifyState là CẢNH BÁO: add THÀNH CÔNG nhưng có chi tiết đáng liếc qua.
+ * Tô VÀNG ở UI và vẫn đếm vào `counts.verified`.
+ */
+export const VERIFY_WARNING_STATES = ["CARRIER_MISMATCH"] as const satisfies readonly VerifyState[];
+
+export type VerifyWarningState = (typeof VERIFY_WARNING_STATES)[number];
+
+/** Đơn add thành công nhưng có cảnh báo (hiện vàng, KHÔNG phải lỗi). */
+export function isVerifyWarning(v: VerifyState): v is VerifyWarningState {
+  return (VERIFY_WARNING_STATES as readonly VerifyState[]).includes(v);
+}
+
+/** Tracking đã vào Etsy: khớp hoàn toàn HOẶC khớp mã nhưng Etsy đổi tên carrier. */
+export function isVerifyAdded(v: VerifyState): boolean {
+  return v === "VERIFIED" || isVerifyWarning(v);
 }
 
 /** Nhãn ngắn hiển thị badge/cột trạng thái. Record đủ mọi giá trị → thêm state mới là lỗi compile. */
@@ -69,7 +92,7 @@ export const VERIFY_LABEL: Record<VerifyState, string> = {
   VERIFIED: "Đã add & xác minh",
   NOT_FOUND: "Không thấy tracking trên Etsy",
   CODE_MISMATCH: "Mã tracking lệch",
-  CARRIER_MISMATCH: "Carrier lệch",
+  CARRIER_MISMATCH: "Đã add — Etsy ghi tên carrier khác",
   MISMATCH: "Lệch tracking",
   SKIPPED: "Bỏ qua",
 };
@@ -142,19 +165,24 @@ export interface TrackingJobCounts {
   total: number;
   /** Số đơn đã chọn để add (selected = true). */
   selected: number;
-  /** verify === "VERIFIED" (khớp cả mã + carrier). */
+  /**
+   * Đơn add THÀNH CÔNG = isVerifyAdded(verify), tức VERIFIED + CARRIER_MISMATCH.
+   * Ca carrier lệch nằm ở đây vì tracking ĐÃ vào Etsy — Etsy chỉ đổi tên carrier.
+   */
   verified: number;
   /**
-   * Tổng số đơn đã add nhưng xác minh KHÔNG đạt = isVerifyFailure(verify).
-   * Gộp cả 3 ca mới lẫn giá trị legacy "MISMATCH" của job cũ → badge "N lệch"
-   * hiện có KHÔNG vỡ khi xem lại lịch sử cũ.
+   * Số đơn add THẤT BẠI = isVerifyFailure(verify): NOT_FOUND + CODE_MISMATCH +
+   * giá trị legacy "MISMATCH" của job cũ (badge "N lệch" không vỡ khi xem lịch sử cũ).
    */
   mismatch: number;
   /** Chi tiết của `mismatch` — verify === "NOT_FOUND". */
   not_found: number;
   /** Chi tiết của `mismatch` — verify === "CODE_MISMATCH". */
   code_mismatch: number;
-  /** Chi tiết của `mismatch` — verify === "CARRIER_MISMATCH". */
+  /**
+   * CẢNH BÁO, không phải lỗi: đã nằm TRONG `verified`, KHÔNG nằm trong `mismatch`.
+   * Đếm riêng để hiện badge vàng "N đổi tên carrier".
+   */
   carrier_mismatch: number;
   /** add_status === "FAILED". */
   failed: number;
@@ -190,7 +218,8 @@ export function summarizeTrackingOrders(
   return {
     total: orders.length,
     selected: sent.length,
-    verified: countVerify("VERIFIED"),
+    // Gồm cả CARRIER_MISMATCH: tracking đã vào Etsy, chỉ lệch TÊN carrier.
+    verified: sent.filter((o) => isVerifyAdded(o.verify)).length,
     mismatch: sent.filter((o) => isVerifyFailure(o.verify)).length,
     not_found: countVerify("NOT_FOUND"),
     code_mismatch: countVerify("CODE_MISMATCH"),
