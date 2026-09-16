@@ -20,7 +20,7 @@ import {
 import {
   columnIndex,
   countSkipReasons,
-  groupEligibleByStore,
+  groupAddableByStore,
   IMPORT_SKIP_REASON_LABEL,
   normalizeHeader,
   type ImportCheckedRow,
@@ -112,6 +112,9 @@ export function ImportPanel({
   const [profileId, setProfileId] = useState<string>(MANUAL);
   const [mapping, setMapping] = useState<Mapping>(DEFAULT_MAPPING);
   const [checked, setChecked] = useState<ImportCheckResponse | null>(null);
+  // Tăng mỗi lượt kiểm tra → dùng làm key remount CheckResult, để lựa chọn tick của lượt
+  // trước không dính sang lượt sau (số dòng/thứ tự đã khác hẳn).
+  const [checkSeq, setCheckSeq] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [saveName, setSaveName] = useState("");
   const [savedNote, setSavedNote] = useState<string | null>(null);
@@ -168,18 +171,22 @@ export function ImportPanel({
     }
     try {
       setChecked(await checkMut.mutateAsync({ rows: mapped }));
+      setCheckSeq((n) => n + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Kiểm tra thất bại");
     }
   };
 
-  const applyEligible = useCallback(() => {
-    if (!checked) return;
-    const groups = groupEligibleByStore(checked.rows);
-    if (groups.length === 0) return;
-    onApply(groups);
-    onClose();
-  }, [checked, onApply, onClose]);
+  // Nhận nhóm ĐÃ GOM từ CheckResult: việc chọn dòng nào nằm ở đó (người dùng tick được
+  // cả đơn không PROCESSING), nên panel không tự quyết lọc theo trạng thái nữa.
+  const applySelected = useCallback(
+    (groups: ImportStoreGroup[]) => {
+      if (groups.length === 0) return;
+      onApply(groups);
+      onClose();
+    },
+    [onApply, onClose],
+  );
 
   const saveAsProfile = async () => {
     const name = saveName.trim();
@@ -345,7 +352,7 @@ export function ImportPanel({
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      {checked && <CheckResult result={checked} onApply={applyEligible} />}
+      {checked && <CheckResult key={checkSeq} result={checked} onApply={applySelected} />}
     </div>
   );
 }
@@ -384,22 +391,83 @@ function ColumnPicker({
   );
 }
 
+/** Khoá định danh 1 dòng kết quả (trùng key React của bảng). */
+function rowKey(r: ImportCheckedRow): string {
+  return `${r.rowNumber}-${r.raw_order_id}`;
+}
+
+/** Dòng INVALID thiếu hẳn dữ liệu (order id/tracking/carrier) hoặc trùng đơn → không add được. */
+function isSelectable(r: ImportCheckedRow): boolean {
+  return r.state !== "INVALID";
+}
+
 function CheckResult({
   result,
   onApply,
 }: {
   result: ImportCheckResponse;
-  onApply: () => void;
+  onApply: (groups: ImportStoreGroup[]) => void;
 }) {
   const { counts } = result;
-  // Đơn sẽ add, gom theo shop suy từ tiền tố — đây chính là các khối shop sắp được dựng.
-  const groups = groupEligibleByStore(result.rows);
+
+  /*
+   * Người dùng TỰ CHỌN dòng nào đưa sang khối shop — không khoá cứng theo PROCESSING nữa.
+   * Mặc định tick sẵn đúng các đơn PROCESSING (giữ nguyên thói quen cũ: mở ra bấm là chạy),
+   * nhưng đơn trạng thái khác / không tra thấy vẫn tick thêm được.
+   * Dòng INVALID không tick được: không có dữ liệu để add, backend cũng không tra shop cho nó.
+   */
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(result.rows.filter((r) => r.state === "ELIGIBLE").map(rowKey)),
+  );
+
+  const selectedRows = useMemo(
+    () => result.rows.filter((r) => selected.has(rowKey(r))),
+    [result.rows, selected],
+  );
+  // Khối shop hiện ra phải phản ánh LỰA CHỌN, không phải danh sách PROCESSING.
+  const groups = useMemo(() => groupAddableByStore(selectedRows), [selectedRows]);
   const unknown = groups.find((g) => !g.store);
+  const offStatus = selectedRows.filter((r) => r.state !== "ELIGIBLE").length;
 
   // Thống kê lý do bỏ qua: trả lời "vì sao chỉ N đơn add được" mà không phải cuộn cả nghìn dòng.
   const reasons = countSkipReasons(result.rows);
   const [filter, setFilter] = useState<ImportRowState | "ALL">("ALL");
-  const visible = filter === "ALL" ? result.rows : result.rows.filter((r) => r.state === filter);
+  const [q, setQ] = useState("");
+
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return result.rows.filter((r) => {
+      if (filter !== "ALL" && r.state !== filter) return false;
+      if (!needle) return true;
+      // Tìm trên mọi cột người dùng nhìn thấy, gồm cả mã gốc còn tiền tố.
+      return [r.order_id, r.raw_order_id, r.tracking_number, r.carrier, r.store].some((v) =>
+        (v ?? "").toLowerCase().includes(needle),
+      );
+    });
+  }, [result.rows, filter, q]);
+
+  const toggleRow = (r: ImportCheckedRow) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const k = rowKey(r);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+
+  // Tick đầu bảng áp dụng cho TOÀN BỘ dòng đang lọc/tìm (không chỉ 300 dòng đang render).
+  const selectableVisible = visible.filter(isSelectable);
+  const allVisibleSelected =
+    selectableVisible.length > 0 && selectableVisible.every((r) => selected.has(rowKey(r)));
+  const toggleAllVisible = () =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const r of selectableVisible) {
+        if (allVisibleSelected) next.delete(rowKey(r));
+        else next.add(rowKey(r));
+      }
+      return next;
+    });
 
   const TABS: { key: ImportRowState | "ALL"; label: string; n: number }[] = [
     { key: "ALL", label: "Tất cả", n: counts.total },
@@ -438,7 +506,7 @@ function CheckResult({
       {groups.length > 0 && (
         <div className="space-y-2 rounded-xl border border-border bg-background px-4 py-3 text-sm">
           <div className="text-xs font-medium text-muted-foreground">
-            Sẽ tách thành {groups.length} khối shop:
+            {selectedRows.length} đơn đã chọn → {groups.length} khối shop:
           </div>
           <div className="flex flex-wrap gap-2">
             {groups.map((g) => (
@@ -458,6 +526,12 @@ function CheckResult({
             <p className="text-xs text-warning">
               {unknown.rows.length} đơn không suy được shop (order id không có tiền tố đã đăng ký
               trong tab Prefix) — khối của nhóm này để trống shop, bạn tự chọn.
+            </p>
+          )}
+          {offStatus > 0 && (
+            <p className="text-xs text-warning">
+              Trong số đã chọn có {offStatus} đơn KHÔNG ở trạng thái PROCESSING — vẫn sẽ được add
+              tracking như thường, tự kiểm tra lại nếu đó không phải ý bạn.
             </p>
           )}
         </div>
@@ -499,10 +573,38 @@ function CheckResult({
         ))}
       </div>
 
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Tìm theo Order ID, tracking, carrier, shop…"
+          className="w-full rounded-xl border-0 bg-secondary py-2 pl-9 pr-16 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        {q.trim() && (
+          <button
+            onClick={() => setQ("")}
+            className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-full px-2 py-1 text-xs text-muted-foreground hover:bg-input-strong hover:text-foreground"
+          >
+            {visible.length} <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+
       <div className="max-h-80 overflow-auto rounded-xl border border-border bg-background">
         <table className="w-full text-sm">
           <thead className="sticky top-0 z-10 bg-secondary text-xs text-muted-foreground">
             <tr>
+              <th className="w-10 px-3 py-2 text-left">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  disabled={selectableVisible.length === 0}
+                  onChange={toggleAllVisible}
+                  title={`Chọn/bỏ toàn bộ ${selectableVisible.length} dòng đang hiện`}
+                  className="h-4 w-4 accent-primary disabled:cursor-not-allowed disabled:opacity-40"
+                />
+              </th>
               <th className="px-3 py-2 text-left">Dòng</th>
               <th className="px-3 py-2 text-left">Order ID</th>
               <th className="px-3 py-2 text-left">Shop</th>
@@ -514,7 +616,12 @@ function CheckResult({
           <tbody className="divide-y divide-border">
             {/* Trần 300 dòng: file vài nghìn dòng render hết sẽ treo UI. Dùng tab lọc để soi nhóm. */}
             {visible.slice(0, 300).map((r) => (
-              <ResultRow key={`${r.rowNumber}-${r.raw_order_id}`} row={r} />
+              <ResultRow
+                key={rowKey(r)}
+                row={r}
+                selected={selected.has(rowKey(r))}
+                onToggle={() => toggleRow(r)}
+              />
             ))}
           </tbody>
         </table>
@@ -526,21 +633,42 @@ function CheckResult({
       )}
 
       <button
-        onClick={onApply}
-        disabled={counts.eligible === 0}
+        onClick={() => onApply(groups)}
+        disabled={selectedRows.length === 0}
         className="flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/90 disabled:bg-input-strong"
       >
         <CheckCircle2 className="h-4 w-4" />
-        Đưa {counts.eligible} đơn PROCESSING vào {groups.length} khối shop
+        Đưa {selectedRows.length} đơn đã chọn vào {groups.length} khối shop
       </button>
     </div>
   );
 }
 
-function ResultRow({ row: r }: { row: ImportCheckedRow }) {
+function ResultRow({
+  row: r,
+  selected,
+  onToggle,
+}: {
+  row: ImportCheckedRow;
+  selected: boolean;
+  onToggle: () => void;
+}) {
   const eligible = r.state === "ELIGIBLE";
+  const selectable = isSelectable(r);
   return (
-    <tr className={eligible ? undefined : "bg-secondary/50 text-muted-foreground"}>
+    // Nền mờ theo TRẠNG THÁI (như cũ), nhưng dòng đã tick luôn sáng lên để thấy ngay cái
+    // mình đã chọn — kể cả khi đó là đơn không PROCESSING.
+    <tr className={!eligible && !selected ? "bg-secondary/50 text-muted-foreground" : undefined}>
+      <td className="px-3 py-2 align-top">
+        <input
+          type="checkbox"
+          checked={selected}
+          disabled={!selectable}
+          onChange={onToggle}
+          title={selectable ? undefined : "Dòng lỗi — thiếu dữ liệu hoặc trùng đơn, không add được"}
+          className="h-4 w-4 accent-primary disabled:cursor-not-allowed disabled:opacity-40"
+        />
+      </td>
       <td className="px-3 py-2 align-top text-xs">{r.rowNumber}</td>
       <td className="px-3 py-2 align-top font-mono">
         {r.order_id || r.raw_order_id || "—"}

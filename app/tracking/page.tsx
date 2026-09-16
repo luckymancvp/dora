@@ -22,41 +22,50 @@ import {
 } from "lucide-react";
 import { useShops } from "@/lib/hooks/useShops";
 import { MobileMenuButton } from "@/components/sidebar";
-import { HistorySection } from "@/components/tracking/HistorySection";
+// VerifyFailureCell dùng chung với tab Lịch sử: job đang chạy và lịch sử phải nói GIỐNG HỆT nhau.
+import { HistorySection, VerifyFailureCell } from "@/components/tracking/HistorySection";
 import { ImportPanel } from "@/components/tracking/ImportPanel";
 import { ImportProfilesSection } from "@/components/tracking/ImportProfilesSection";
 import { CarrierRulesSection } from "@/components/tracking/CarrierRulesSection";
-import { carrierLabel } from "@/lib/types/tracking";
-import type { ImportStoreGroup } from "@/lib/types/tracking-import";
+import {
+  carrierLabel,
+  isVerifyFailure,
+  summarizeTrackingOrders,
+  VERIFY_LABEL,
+} from "@/lib/types/tracking";
+import type {
+  TrackingJobCounts,
+  TrackingJobOrder,
+  TrackingPhase,
+  VerifyState,
+} from "@/lib/types/tracking";
+import type { TrackingJobDetail } from "@/lib/hooks/useTrackingHistory";
+import {
+  groupAddableByStore,
+  normalizeOrderId,
+  type ImportStoreGroup,
+} from "@/lib/types/tracking-import";
+import { useCheckImportRows } from "@/lib/hooks/useTrackingImport";
 
-type Precheck = "PENDING" | "CLEAR" | "EXISTS";
-type AddStatus = "NEW" | "SENDING" | "DONE" | "FAILED";
-type VerifyState = "PENDING" | "VERIFIED" | "MISMATCH" | "SKIPPED";
-type Phase = "PRECHECK" | "AWAIT_CONFIRM" | "ADDING" | "VERIFY" | "COMPLETED";
-
-interface JobOrder {
-  order_id: string;
-  tracking_number: string;
-  carrier: number;
-  other_carrier: string;
-  precheck: Precheck;
-  existing?: { code: string; carrier_name: string };
-  selected: boolean;
-  add_status: AddStatus;
-  verify: VerifyState;
-  verified?: { code: string; carrier_name: string };
-  message?: string;
-}
-
-interface Job {
-  id: string;
-  shop_name: string;
-  phase: Phase;
-  orders: JobOrder[];
-  error?: string;
-}
+/**
+ * Trang này TRƯỚC ĐÂY tự khai lại Precheck/AddStatus/VerifyState/Phase/JobOrder/Job.
+ * Bản sao đó khiến compiler KHÔNG bắt được khi server đổi ngữ nghĩa: khi VerifyState
+ * mọc thêm NOT_FOUND / CODE_MISMATCH / CARRIER_MISMATCH, page.tsx im lặng
+ * rơi xuống nhánh "—" còn HistorySection (đã dùng type chung) thì không. Giờ cả hai
+ * component đọc CÙNG document Mongo qua CÙNG một type:
+ *   JobOrder → TrackingJobOrder, Phase → TrackingPhase,
+ *   Job      → TrackingJobDetail (KHÔNG phải TrackingJob: qua JSON thì ngày là string,
+ *              `_id` đã thành `id`).
+ */
 
 interface ParsedRow {
+  /**
+   * Order id NGUYÊN VĂN người dùng dán (vd "THS-4150423075-1"). PHẢI giữ lại: shop được
+   * suy từ TIỀN TỐ mã (tab "Prefix" của Sheet) nên nút "Phân loại shop" cần bản có tiền tố.
+   * Cắt tiền tố trước khi tra là mất luôn căn cứ phân loại.
+   */
+  raw_order_id: string;
+  /** Số đơn Etsy đã tách khỏi tiền tố/hậu tố — đây là cái gửi lên Etsy. */
   order_id: string;
   tracking_number: string;
   carrier: string;
@@ -84,11 +93,15 @@ function parseLine(line: string): ParsedRow | null {
     const m = raw.match(/^(\S+)\s+(\S+)\s*(.*)$/);
     parts = m ? [m[1], m[2], m[3]] : [raw];
   }
-  const order_id = (parts[0] ?? "").trim();
+  const raw_order_id = (parts[0] ?? "").trim();
   const tracking_number = (parts[1] ?? "").trim();
   const carrier = (parts.slice(2).join(parts.length > 3 ? " " : "") || parts[2] || "").trim();
+  // Mã dán từ bên gia công hay có tiền tố/hậu tố ("THS-4150423075-1", "THS-4150423080R1").
+  // normalizeOrderId lấy cụm số DÀI NHẤT → 4150423075 / 4150423080; KHÔNG lấy cụm cuối vì
+  // hậu tố "R1"/"-1" sẽ làm mọi dòng đổ về cùng một id. Dùng chung hàm với luồng import CSV.
+  const order_id = normalizeOrderId(raw_order_id);
   if (!order_id || !tracking_number) return null;
-  return { order_id, tracking_number, carrier };
+  return { raw_order_id, order_id, tracking_number, carrier };
 }
 
 function parseRows(text: string): ParsedRow[] {
@@ -99,12 +112,29 @@ function parseRows(text: string): ParsedRow[] {
 }
 
 /** Các trường bắt buộc còn thiếu của 1 đơn (để cảnh báo đỏ & chặn tick chọn). */
-function missingFields(o: JobOrder): string[] {
+function missingFields(o: TrackingJobOrder): string[] {
   const missing: string[] = [];
   if (!o.order_id?.trim()) missing.push("Order ID");
   if (!o.tracking_number?.trim()) missing.push("Tracking");
   if (!carrierLabel(o.carrier, o.other_carrier).trim()) missing.push("Carrier");
   return missing;
+}
+
+/**
+ * Chi tiết "vì sao chưa đạt xác minh" cho khối tóm tắt cuối job — tách rõ 3 ca thay vì
+ * gộp hết thành "lệch tracking" như trước. Nhãn lấy từ VERIFY_LABEL (nguồn duy nhất).
+ * Phần dư giữa `mismatch` và tổng 3 ca là đơn legacy "MISMATCH" của lượt add cũ.
+ */
+function failureBreakdown(c: TrackingJobCounts): string {
+  const rows: [VerifyState, number][] = [
+    ["NOT_FOUND", c.not_found],
+    ["CODE_MISMATCH", c.code_mismatch],
+    ["CARRIER_MISMATCH", c.carrier_mismatch],
+  ];
+  const parts = rows.filter(([, n]) => n > 0).map(([s, n]) => `${VERIFY_LABEL[s]}: ${n}`);
+  const legacy = c.mismatch - c.not_found - c.code_mismatch - c.carrier_mismatch;
+  if (legacy > 0) parts.push(`${VERIFY_LABEL.MISMATCH}: ${legacy}`);
+  return parts.join(" · ");
 }
 
 type Tab = "add" | "history" | "config";
@@ -124,17 +154,21 @@ export default function TrackingPage() {
   const [blocks, setBlocks] = useState<ShopBlock[]>(() => [
     { key: "b0", shopSelect: "", customShop: "", bulk: "" },
   ]);
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobs, setJobs] = useState<TrackingJobDetail[]>([]);
   const [createErrors, setCreateErrors] = useState<{ shop: string; error: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
+  // Nút "Phân loại shop" của từng khối: key khối đang chạy + tóm tắt kết quả lần gần nhất.
+  const [classifyingKey, setClassifyingKey] = useState<string | null>(null);
+  const [classifyNote, setClassifyNote] = useState<string | null>(null);
+  const checkMut = useCheckImportRows();
 
   // Theo dõi phase của từng card để bật nút "xác nhận tất cả".
-  const [phases, setPhases] = useState<Record<string, Phase>>({});
+  const [phases, setPhases] = useState<Record<string, TrackingPhase>>({});
   const cardRefs = useRef<Map<string, JobCardHandle>>(new Map());
   const [confirmingAll, setConfirmingAll] = useState(false);
-  const onPhase = useCallback((id: string, phase: Phase) => {
+  const onPhase = useCallback((id: string, phase: TrackingPhase) => {
     setPhases((p) => (p[id] === phase ? p : { ...p, [id]: phase }));
   }, []);
   const awaitingCount = Object.values(phases).filter((p) => p === "AWAIT_CONFIRM").length;
@@ -202,6 +236,67 @@ export default function TrackingPage() {
   const removeBlock = (key: string) =>
     setBlocks((bs) => (bs.length > 1 ? bs.filter((b) => b.key !== key) : bs));
 
+  /**
+   * "Phân loại shop": dán lẫn lộn đơn của nhiều shop vào MỘT khối rồi tách ra.
+   * Dùng lại đường tra của Import CSV (POST /api/tracking/import/check) NHƯNG chỉ lấy
+   * phần suy shop: gom bằng groupAddableByStore nên KHÔNG lọc theo trạng thái PROCESSING.
+   * Đơn khác trạng thái vẫn về đúng khối shop, người dùng tự quyết add hay không.
+   *
+   * QUAN TRỌNG: gửi `raw_order_id` (còn tiền tố) chứ KHÔNG gửi order_id đã tách số.
+   * Shop được suy từ tiền tố (tab "Prefix"), cắt tiền tố đi là hết đường phân loại.
+   */
+  const classifyBlock = useCallback(
+    async (key: string, bulk: string) => {
+      const parsed = parseRows(bulk);
+      if (parsed.length === 0) return;
+
+      setClassifyingKey(key);
+      setClassifyNote(null);
+      setError(null);
+      try {
+        const res = await checkMut.mutateAsync({
+          rows: parsed.map((p, i) => ({
+            rowNumber: i + 1,
+            order_id: p.raw_order_id,
+            tracking_number: p.tracking_number,
+            carrier: p.carrier,
+          })),
+        });
+
+        const groups = groupAddableByStore(res.rows);
+        if (groups.length === 0) {
+          setClassifyNote(
+            `Không tách được đơn nào: cả ${res.counts.total} dòng đều thiếu dữ liệu (order id / tracking / carrier) hoặc trùng đơn. Khối được giữ nguyên.`,
+          );
+          return;
+        }
+
+        // Dọn khối nguồn TRƯỚC khi đổ kết quả: applyImportedGroups tái dùng khối rỗng, nếu
+        // để nguyên text cũ thì đơn bị nhân đôi (vừa ở khối nguồn vừa ở khối shop mới).
+        setBlocks((bs) =>
+          bs.map((b) => (b.key === key ? { ...b, shopSelect: "", customShop: "", bulk: "" } : b)),
+        );
+        applyImportedGroups(groups);
+
+        const unknown = groups.find((g) => !g.store.trim());
+        const sorted = groups.reduce((n, g) => n + g.rows.length, 0);
+        setClassifyNote(
+          `Đã tách ${sorted} đơn thành ${groups.length} shop (không lọc theo trạng thái đơn).` +
+            (res.counts.invalid > 0
+              ? ` Bỏ ${res.counts.invalid} dòng thiếu dữ liệu hoặc trùng đơn.`
+              : "") +
+            (unknown ? ` ${unknown.rows.length} đơn CHƯA RÕ SHOP — tự chọn shop cho khối đó.` : "") +
+            (res.meraUnavailable ? " (Chưa cấu hình Mera — chỉ tra được Google Sheet.)" : ""),
+        );
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Phân loại shop thất bại");
+      } finally {
+        setClassifyingKey(null);
+      }
+    },
+    [checkMut, applyImportedGroups],
+  );
+
   const startJobs = async () => {
     setError(null);
     setCreateErrors([]);
@@ -230,9 +325,18 @@ export default function TrackingPage() {
             const res = await fetch("/api/tracking/jobs", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ shopName: v.shopName, shopId: null, orders: v.parsed }),
+              // Gửi order_id ĐÃ tách số; raw_order_id chỉ phục vụ phân loại shop, Etsy không hiểu.
+              body: JSON.stringify({
+                shopName: v.shopName,
+                shopId: null,
+                orders: v.parsed.map(({ order_id, tracking_number, carrier }) => ({
+                  order_id,
+                  tracking_number,
+                  carrier,
+                })),
+              }),
             });
-            const data = (await res.json()) as { job?: Job; error?: string };
+            const data = (await res.json()) as { job?: TrackingJobDetail; error?: string };
             if (!res.ok || !data.job) {
               return { error: { shop: v.shopName, error: data.error ?? `Lỗi ${res.status}` } };
             }
@@ -331,8 +435,17 @@ export default function TrackingPage() {
               canRemove={blocks.length > 1}
               onChange={(patch) => updateBlock(b.key, patch)}
               onRemove={() => removeBlock(b.key)}
+              onClassify={() => classifyBlock(b.key, b.bulk)}
+              classifying={classifyingKey === b.key}
             />
           ))}
+
+          {classifyNote && (
+            <div className="flex items-start gap-2 rounded-xl border border-border bg-secondary px-4 py-3 text-sm">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+              <span>{classifyNote}</span>
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -465,6 +578,8 @@ function ShopBlockEditor({
   canRemove,
   onChange,
   onRemove,
+  onClassify,
+  classifying,
 }: {
   block: ShopBlock;
   index: number;
@@ -472,8 +587,16 @@ function ShopBlockEditor({
   canRemove: boolean;
   onChange: (patch: Partial<ShopBlock>) => void;
   onRemove: () => void;
+  onClassify: () => void;
+  classifying: boolean;
 }) {
   const parsed = useMemo(() => parseRows(block.bulk), [block.bulk]);
+  // Mã có tiền tố ("THS-…") đã được tách số khi parse — hiện lại để người dùng thấy cái
+  // THỰC SỰ gửi lên Etsy, tránh nghi ngờ hệ thống gửi nhầm cả tiền tố.
+  const stripped = useMemo(
+    () => parsed.filter((p) => p.raw_order_id !== p.order_id).slice(0, 3),
+    [parsed],
+  );
 
   return (
     <div className="space-y-4 rounded-2xl border border-border p-4">
@@ -521,9 +644,37 @@ function ShopBlockEditor({
           value={block.bulk}
           onChange={(e) => onChange({ bulk: e.target.value })}
           rows={6}
-          placeholder={"4078744073\tLT401168241GB\tRoyal Mail\n4078744074\tLT401168242GB\tRoyal Mail"}
+          placeholder={"THS-4150423075-1\t9214490411375404908890\tUSPS\n4078744074\tLT401168242GB\tRoyal Mail"}
           className="w-full resize-y rounded-xl border-0 bg-secondary px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         />
+
+        {stripped.length > 0 && (
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Đã tách số đơn khỏi tiền tố:{" "}
+            {stripped.map((p, i) => (
+              <span key={p.raw_order_id + i}>
+                {i > 0 && ", "}
+                <code>{p.raw_order_id}</code> → <code>{p.order_id}</code>
+              </span>
+            ))}
+            {parsed.filter((p) => p.raw_order_id !== p.order_id).length > stripped.length && " …"}
+          </p>
+        )}
+
+        {/* Dán lẫn đơn của nhiều shop vào đây rồi bấm nút này để tách ra từng khối shop.
+            Dùng chung đường tra của Import CSV (tiền tố mã → Sheet → Mera). */}
+        <button
+          onClick={onClassify}
+          disabled={classifying || parsed.length === 0}
+          className="mt-2 flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-secondary disabled:opacity-40"
+        >
+          {classifying ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Search className="h-3.5 w-3.5" />
+          )}
+          Phân loại shop ({parsed.length} đơn)
+        </button>
       </div>
     </div>
   );
@@ -534,9 +685,12 @@ interface JobCardHandle {
   confirm: () => Promise<void>;
 }
 
-const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, phase: Phase) => void }>(
+const JobCard = forwardRef<
+  JobCardHandle,
+  { initial: TrackingJobDetail; onPhase: (id: string, phase: TrackingPhase) => void }
+>(
   function JobCard({ initial, onPhase }, ref) {
-  const [job, setJob] = useState<Job>(initial);
+  const [job, setJob] = useState<TrackingJobDetail>(initial);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -546,7 +700,7 @@ const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, 
   const pollJob = useCallback(async (id: string) => {
     const res = await fetch(`/api/tracking/jobs/${id}`);
     if (!res.ok) return;
-    const data = (await res.json()) as { job?: Job };
+    const data = (await res.json()) as { job?: TrackingJobDetail };
     if (data.job) setJob(data.job);
   }, []);
 
@@ -583,7 +737,7 @@ const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, 
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ orderIds }),
         });
-        const data = (await res.json()) as { job?: Job; error?: string };
+        const data = (await res.json()) as { job?: TrackingJobDetail; error?: string };
         if (!res.ok) {
           setError(data.error ?? `Lỗi ${res.status}`);
           return;
@@ -626,14 +780,14 @@ const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, 
     [job.phase, selected, submitAdd],
   );
 
+  /**
+   * Counts của job đang chạy — KHÔNG tự đếm lại: dùng chung `summarizeTrackingOrders`
+   * với `summarizeJob` của service (nguồn của counts trong tab Lịch sử). Trước đây hai
+   * bên là hai đoạn code song song chỉ được ràng buộc bằng comment nên dễ trôi lệch.
+   */
   const summary = useMemo(() => {
     if (job.phase !== "COMPLETED" || job.error) return null;
-    const sent = job.orders.filter((o) => o.selected);
-    const verified = sent.filter((o) => o.verify === "VERIFIED").length;
-    const mismatch = sent.filter((o) => o.verify === "MISMATCH").length;
-    const failed = sent.filter((o) => o.add_status === "FAILED").length;
-    const skipped = sent.filter((o) => o.verify === "SKIPPED" && o.add_status !== "FAILED").length;
-    return { total: sent.length, verified, mismatch, failed, skipped };
+    return summarizeTrackingOrders(job.orders);
   }, [job]);
 
   const q = query.trim().toLowerCase();
@@ -696,23 +850,30 @@ const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, 
           ) : (
             <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
           )}
-          <span>
-            Hoàn tất {summary.total} đơn:{" "}
-            <strong className="text-success">{summary.verified} đã xác minh</strong>
+          <div className="space-y-1">
+            <span>
+              {/* N = số đơn ĐÃ GỬI add (selected), không phải orders.length. */}
+              Hoàn tất {summary.selected} đơn:{" "}
+              <strong className="text-success">{summary.verified} đã xác minh</strong>
+              {summary.mismatch > 0 && (
+                <>
+                  {" · "}
+                  <strong className="text-destructive">{summary.mismatch} chưa đạt xác minh</strong>
+                </>
+              )}
+              {summary.failed > 0 && (
+                <>
+                  {" · "}
+                  <strong className="text-destructive">{summary.failed} thất bại</strong>
+                </>
+              )}
+              {summary.skipped > 0 && <> · {summary.skipped} bỏ qua xác minh</>}.
+            </span>
+            {/* Breakdown lý do: không gộp mọi ca lỗi thành một chữ "lệch tracking". */}
             {summary.mismatch > 0 && (
-              <>
-                {" · "}
-                <strong className="text-destructive">{summary.mismatch} lệch tracking</strong>
-              </>
+              <p className="text-xs text-muted-foreground">{failureBreakdown(summary)}</p>
             )}
-            {summary.failed > 0 && (
-              <>
-                {" · "}
-                <strong className="text-destructive">{summary.failed} thất bại</strong>
-              </>
-            )}
-            {summary.skipped > 0 && <> · {summary.skipped} bỏ qua xác minh</>}.
-          </span>
+          </div>
         </div>
       )}
 
@@ -806,8 +967,8 @@ const JobCard = forwardRef<JobCardHandle, { initial: Job; onPhase: (id: string, 
   );
 });
 
-function PhaseBadge({ phase }: { phase: Phase }) {
-  const label: Record<Phase, string> = {
+function PhaseBadge({ phase }: { phase: TrackingPhase }) {
+  const label: Record<TrackingPhase, string> = {
     PRECHECK: "Đang kiểm tra",
     AWAIT_CONFIRM: "Chờ xác nhận",
     ADDING: "Đang gửi",
@@ -850,7 +1011,7 @@ function SearchBox({
   );
 }
 
-function OrderStatusCell({ order: o, phase }: { order: JobOrder; phase: Phase }) {
+function OrderStatusCell({ order: o, phase }: { order: TrackingJobOrder; phase: TrackingPhase }) {
   if (phase === "PRECHECK") {
     return <span className="text-muted-foreground">Đang kiểm tra…</span>;
   }
@@ -868,17 +1029,32 @@ function OrderStatusCell({ order: o, phase }: { order: JobOrder; phase: Phase })
   // ADDING / VERIFY / COMPLETED
   if (o.verify === "VERIFIED") {
     return (
-      <span className="inline-flex items-center gap-1 text-success">
-        <CheckCircle2 className="h-3.5 w-3.5" /> Đã add & xác minh
+      <span className="inline-flex items-start gap-1 text-success">
+        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        {VERIFY_LABEL.VERIFIED}
       </span>
     );
   }
-  if (o.verify === "MISMATCH" || o.add_status === "FAILED") {
+  // Mọi ca xác minh KHÔNG đạt (NOT_FOUND / CODE_MISMATCH / CARRIER_MISMATCH + legacy
+  // MISMATCH) và ca add lỗi đều đi qua cùng một cell với tab Lịch sử.
+  if (isVerifyFailure(o.verify) || o.add_status === "FAILED") {
+    return <VerifyFailureCell order={o} />;
+  }
+  // Đã add nhưng bước verify không chạy được (GET shipments lỗi / shop offline lúc verify).
+  // PHẢI đứng trước nhánh add_status === "DONE": job đã COMPLETED nên poll đã dừng, nếu rơi
+  // xuống đó thì đơn đứng vĩnh viễn ở "đang xác minh…" và o.message không bao giờ hiện ra.
+  if (o.verify === "SKIPPED" && o.selected) {
     return (
-      <span className="inline-flex items-center gap-1 text-destructive">
-        <XCircle className="h-3.5 w-3.5" />
-        {o.message ?? "Thất bại"}
-        {o.verified?.code ? ` (Etsy: ${o.verified.code})` : ""}
+      <span className="inline-flex items-start gap-1 text-warning">
+        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>
+          {/* KHÔNG dùng VERIFY_LABEL.SKIPPED ("Bỏ qua") ở đây: state SKIPPED gánh 2 tình
+              huống khác hẳn nhau — đơn không được chọn (đúng là bỏ qua) và đơn ĐÃ add
+              nhưng verify không chạy được. Gọi ca này là "bỏ qua" sẽ khiến người vận hành
+              tưởng chưa add, trong khi tracking đã lên Etsy rồi. */}
+          Đã add nhưng CHƯA xác minh được
+          {o.message && <span className="block text-xs text-muted-foreground">{o.message}</span>}
+        </span>
       </span>
     );
   }

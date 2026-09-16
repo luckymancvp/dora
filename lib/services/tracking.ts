@@ -7,6 +7,7 @@ import {
 } from "@/lib/services/ably-publish";
 import {
   resolveCarrier,
+  summarizeTrackingOrders,
   type ShipmentResultItem,
   type TrackingHistoryItem,
   type TrackingHistoryQuery,
@@ -14,9 +15,24 @@ import {
   type TrackingJob,
   type TrackingJobCounts,
   type TrackingJobOrder,
+  type TrackingOrderCountFields,
   type TrackingOrderInput,
+  type TrackingValue,
+  type VerifyState,
 } from "@/lib/types/tracking";
 import { resolveShopIdByName } from "@/lib/services/shop-read";
+
+/*
+ * GHI CHÚ CHỦ ĐÍCH: verify KHÔNG xét `is_shipped`.
+ *
+ * Đã từng có nhánh coi `is_shipped === false` là lỗi ("Etsy chưa đánh dấu đã ship") nhưng
+ * đã gỡ bỏ. Lý do: verify GET chạy chỉ vài giây sau POST add, không có bằng chứng Etsy kịp
+ * cập nhật `isShipped` trong khoảng đó — dùng nó làm điều kiện đạt/không đạt thì đơn add
+ * ĐÚNG cũng có thể bị báo đỏ hàng loạt. Rủi ro lớn hơn lợi ích.
+ *
+ * Nếu sau này muốn thêm lại: phải ĐO trước bằng dữ liệu Etsy thật đọc ngay sau khi add
+ * (không phải số liệu từ luồng sync đơn), đừng bật dựa trên suy luận.
+ */
 
 /** Shop không có browser extension nào online → không thể GET/add tracking. */
 export class ShopOfflineError extends Error {
@@ -29,6 +45,33 @@ export class ShopOfflineError extends Error {
 /** So tracking để verify: bỏ khoảng trắng, không phân biệt hoa thường. */
 function normalizeCode(s: string): string {
   return s.trim().replace(/\s+/g, "").toUpperCase();
+}
+
+/**
+ * So carrier để verify: thường hoá + gộp mọi ký tự không phải chữ/số thành 1 khoảng trắng
+ * → "US Standard" == "us-standard" == "US  Standard".
+ *
+ * CỐ Ý KHÔNG fuzzy hơn (không có bảng alias USPS ↔ "US Postal Service"): alias sai còn
+ * nguy hiểm hơn cảnh báo thừa — nó sẽ báo "đã xác minh" cho đơn thực tế add sai carrier,
+ * đúng cái bug đang sửa. Nếu Etsy hay đổi tên thật, mở issue riêng để nới ở CHÍNH hàm này.
+ */
+function normalizeCarrier(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Carrier Etsy trả về có khớp carrier đã gửi không.
+ * Etsy trả carrier_name RỖNG = KHÔNG khớp (không có bằng chứng nào cho thấy carrier đúng),
+ * chứ không được coi "rỗng == rỗng" là khớp — đó là nguồn của kết luận VERIFIED giả.
+ */
+function carrierMatches(sent: string, fromEtsy: string): boolean {
+  const etsy = normalizeCarrier(fromEtsy);
+  if (!etsy) return false;
+  return normalizeCarrier(sent) === etsy;
 }
 
 /**
@@ -77,28 +120,16 @@ export async function getJob(id: string): Promise<SerializedJob | null> {
 /* ---- Lịch sử add tracking (tab "Lịch sử" trang /tracking) ---- */
 
 /**
- * Chỉ cần 3 field trong orders[] để tính counts → projection giới hạn field,
- * tránh kéo toàn bộ block orders (existing/verified/message…) khi list.
+ * Tính TrackingJobCounts từ mảng orders.
+ *
+ * LOGIC ĐẾM KHÔNG SỐNG Ở ĐÂY: nó nằm ở `summarizeTrackingOrders` trong
+ * lib/types/tracking.ts và được DÙNG CHUNG với `JobCard.summary` ở app/tracking/page.tsx.
+ * Trước đây hai bên tự copy logic, chỉ ràng buộc nhau bằng comment "phải khớp 1:1" nên
+ * dễ trôi (job đang chạy và lịch sử ra số khác nhau). Giữ wrapper này vì `listJobHistory`
+ * đã gọi theo tên và nó là điểm vào rõ nghĩa của tầng service.
  */
-type OrderCountFields = Pick<TrackingJobOrder, "selected" | "verify" | "add_status">;
-
-/**
- * Tính TrackingJobCounts từ mảng orders. Logic PHẢI khớp 1:1 với `JobCard.summary`
- * trong app/tracking/page.tsx để số ở lịch sử == số hiển thị lúc chạy job.
- * Khác biệt duy nhất theo contract: `total = orders.length` (page.tsx dùng sent.length
- * cho "total" hiển thị), còn `selected` mới là số đơn đã gửi add (selected = true).
- */
-export function summarizeJob(orders: OrderCountFields[]): TrackingJobCounts {
-  const sent = orders.filter((o) => o.selected);
-  return {
-    total: orders.length,
-    selected: sent.length,
-    verified: sent.filter((o) => o.verify === "VERIFIED").length,
-    mismatch: sent.filter((o) => o.verify === "MISMATCH").length,
-    failed: sent.filter((o) => o.add_status === "FAILED").length,
-    // SKIPPED nhưng không phải do FAILED (đã tách failed ở trên) → "bỏ qua xác minh".
-    skipped: sent.filter((o) => o.verify === "SKIPPED" && o.add_status !== "FAILED").length,
-  };
+export function summarizeJob(orders: TrackingOrderCountFields[]): TrackingJobCounts {
+  return summarizeTrackingOrders(orders);
 }
 
 /** Shape doc sau projection cho list lịch sử (không kéo orders nặng). */
@@ -111,8 +142,9 @@ interface HistoryProjection {
   error?: string;
   created_at: Date;
   updated_at: Date;
-  // Chỉ 3 field/đơn phục vụ đếm counts.
-  orders: OrderCountFields[];
+  // Chỉ 3 field/đơn phục vụ đếm counts (projection giới hạn field, tránh kéo
+  // toàn bộ block orders: existing/verified/message… khi list lịch sử).
+  orders: TrackingOrderCountFields[];
 }
 
 /**
@@ -248,10 +280,89 @@ export async function createJob(params: {
   return serializeJob(job);
 }
 
+/** Kết quả phân loại 1 đơn ở phase VERIFY (thuần, không đụng DB → dễ suy luận/test). */
+interface VerifyOutcome {
+  verify: VerifyState;
+  /** Không set với VERIFIED "sạch" (theo contract §2). */
+  message?: string;
+  /** Cái Etsy ĐANG CÓ, để người dùng đối chiếu trên bảng. Không set khi Etsy không trả gì. */
+  verified?: TrackingValue;
+}
+
+/**
+ * Phân loại kết quả verify 1 đơn: so shipment Etsy trả về với cái đã gửi.
+ *
+ * VERIFIED phải khớp CẢ HAI: mã tracking + carrier. Trước đây chỉ so mã → đơn add sai
+ * carrier vẫn báo "đã xác minh" trong khi Etsy hiện "No tracking".
+ *
+ * Thứ tự phân loại chạy tuần tự, ưu tiên từ "sai nặng" xuống "sai nhẹ" để message nói
+ * đúng cái người vận hành cần sửa trước.
+ */
+function classifyVerify(o: TrackingJobOrder, list: ShipmentResultItem[]): VerifyOutcome {
+  // 1. Etsy không trả shipment nào có mã cho đơn này → add không ăn.
+  if (list.length === 0) {
+    return {
+      verify: "NOT_FOUND",
+      message: `Không tìm thấy tracking nào trên Etsy sau khi add (đã gửi ${o.tracking_number} · ${o.other_carrier})`,
+    };
+  }
+
+  const sentCode = normalizeCode(o.tracking_number);
+  const codeHits = list.filter((s) => normalizeCode(String(s.tracking_code ?? "")) === sentCode);
+
+  // 2. Etsy có tracking nhưng không mã nào trùng mã đã gửi.
+  if (codeHits.length === 0) {
+    const first = list[0];
+    return {
+      verify: "CODE_MISMATCH",
+      message: `Mã tracking trên Etsy khác mã đã gửi — đã gửi ${o.tracking_number}, Etsy đang có ${list
+        .map((s) => s.tracking_code)
+        .join(", ")}`,
+      verified: {
+        // Gộp mọi mã Etsy đang có: đơn có thể mang nhiều shipment, in đủ để người dùng soi.
+        code: list.map((s) => s.tracking_code).join(", "),
+        carrier_name: String(first?.carrier_name ?? ""),
+      },
+    };
+  }
+
+  /*
+   * 3. Có ít nhất 1 shipment khớp mã → chọn shipment "TỐT NHẤT" trong số đó.
+   * Một đơn Etsy có thể mang nhiều shipment (xem indexShipments): nếu bạ đâu lấy đó,
+   * một shipment cũ/khác carrier có thể đè kết quả của shipment vừa add đúng → báo lệch giả.
+   * Ưu tiên shipment khớp carrier; không có cái nào khớp thì lấy cái đầu tiên Etsy trả.
+   */
+  const best = codeHits.find((s) => carrierMatches(o.other_carrier, String(s.carrier_name ?? ""))) ?? codeHits[0];
+
+  const bestCarrier = String(best.carrier_name ?? "");
+  const verified: TrackingValue = {
+    code: best.tracking_code,
+    carrier_name: bestCarrier,
+  };
+
+  // 3a. Mã khớp nhưng không shipment nào khớp carrier → add nhầm carrier.
+  if (!carrierMatches(o.other_carrier, bestCarrier)) {
+    return {
+      verify: "CARRIER_MISMATCH",
+      // Carrier rỗng ≠ carrier khác: Etsy không ghi nhận carrier nào cho shipment này.
+      // Nói đúng bản chất để người vận hành biết phải mở đơn xem, thay vì đi tìm hãng tên "?".
+      message: bestCarrier.trim()
+        ? `Mã tracking khớp nhưng carrier lệch — đã gửi "${o.other_carrier}", Etsy ghi "${bestCarrier.trim()}"`
+        : `Mã tracking khớp nhưng Etsy KHÔNG ghi nhận carrier nào — đã gửi "${o.other_carrier}"`,
+      verified,
+    };
+  }
+
+  // 3b. Khớp cả mã lẫn carrier → VERIFIED, không set message.
+  return { verify: "VERIFIED", verified };
+}
+
 /**
  * Xử lý kết quả GET shipments từ extension cho cả 2 phase:
  * - PRECHECK: đánh dấu mỗi đơn CLEAR (chưa có tracking) / EXISTS (đã có) → AWAIT_CONFIRM.
- * - VERIFY: so tracking trả về với tracking đã gửi → VERIFIED / MISMATCH → COMPLETED.
+ * - VERIFY: so tracking Etsy trả về với cái đã gửi → VERIFIED, hoặc 1 trong 3 ca lỗi
+ *   NOT_FOUND / CODE_MISMATCH / CARRIER_MISMATCH (xem classifyVerify)
+ *   → COMPLETED. KHÔNG bao giờ ghi "MISMATCH" nữa (giá trị legacy, chỉ đọc từ job cũ).
  */
 export async function applyShipmentsResult(
   id: string,
@@ -310,24 +421,19 @@ export async function applyShipmentsResult(
   if (job.phase === "VERIFY") {
     for (const o of job.orders) {
       if (o.add_status !== "DONE") {
+        // Đơn không add được / không chọn: giữ SKIPPED, không đưa vào 4 ca lỗi verify
+        // (chúng chỉ nói về đơn ĐÃ add xong nhưng xác minh không đạt).
         if (o.verify === "PENDING") o.verify = "SKIPPED";
         continue;
       }
-      // Đơn có thể mang nhiều tracking: chỉ cần MỘT shipment khớp là add thành công.
-      const list = map.get(o.order_id) ?? [];
-      const sent = normalizeCode(o.tracking_number);
-      const hit = list.find((s) => normalizeCode(s.tracking_code) === sent);
-      if (hit) {
-        o.verify = "VERIFIED";
-        o.verified = { code: hit.tracking_code, carrier_name: hit.carrier_name };
-      } else {
-        o.verify = "MISMATCH";
-        const first = list[0];
-        if (first) o.verified = { code: list.map((s) => s.tracking_code).join(", "), carrier_name: first.carrier_name };
-        o.message = first
-          ? "Tracking trên Etsy khác với tracking đã gửi"
-          : "Không tìm thấy tracking trên Etsy sau khi add";
-      }
+      const outcome = classifyVerify(o, map.get(o.order_id) ?? []);
+      o.verify = outcome.verify;
+      // Ghi đè/xoá hẳn message + verified cũ: verify có thể chạy lại (extension gửi
+      // kết quả lần 2), để sót dữ liệu lần trước là nói dối người vận hành.
+      if (outcome.message) o.message = outcome.message;
+      else delete o.message;
+      if (outcome.verified) o.verified = outcome.verified;
+      else delete o.verified;
     }
     await saveOrders(job._id, job.orders, "COMPLETED");
     return true;
