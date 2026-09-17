@@ -22,6 +22,14 @@ export default auth((req) => {
   )
     return NextResponse.next();
 
+  // /api/orders/message: Apps Script gọi bằng x-api-key, KHÔNG có session cookie —
+  // trước đây middleware đẩy về /login nên nhánh x-api-key trong route là code chết.
+  // Chỉ cho qua request thực sự MANG header; route tự so key với MERA_INTERNAL_API_KEY
+  // rồi mới xử lý, không mang header thì vẫn bị chặn như cũ.
+  if (pathname === "/api/orders/message" && req.headers.get("x-api-key")) {
+    return NextResponse.next();
+  }
+
   const isLoginPage = pathname === "/login";
 
   if (!isLoggedIn && !isLoginPage) {

@@ -23,9 +23,9 @@ export interface OrderConversationSyncResult {
 }
 
 /**
- * Bóc lớp bọc của payload Etsy: response có thể là {convo:{...}}, {conversation:{...}}
- * hoặc chính object convo. (Shape chưa được chốt bằng response thật — xem chú thích
- * trong parseOrderConvoMessages.)
+ * Bóc lớp bọc của payload Etsy. Thực tế Etsy trả thẳng object convo
+ * (type "Common_Convo", có convo_id/messages), nhưng vẫn chịu được dạng bọc
+ * {convo:{...}} / {conversation:{...}} phòng khi Etsy đổi.
  */
 export function unwrapConvo(raw: unknown): EtsyRaw | null {
   if (!isObject(raw)) return null;
@@ -89,6 +89,17 @@ function pickImages(m: EtsyRaw): string[] {
   return out;
 }
 
+/** Tuỳ chọn parse — xem parseOrderConvoMessages. */
+export interface OrderConvoParseOpts {
+  orderId: number;
+  /** Tên đăng nhập shop (vd "CusGiftsCo") — KHÁC tên hiển thị trên tin ("Custom Delights"). */
+  shopName?: string;
+  /** user_id của shop (stores → current_user.user_id). Cách nhận biết tin shop CHÍNH XÁC nhất. */
+  shopUserId?: number;
+  /** buyer_id của đơn — dùng khi thiếu shopUserId: hội thoại chỉ có 2 phía. */
+  buyerId?: number;
+}
+
 const SHOP_FLAG_KEYS = [
   "is_from_shop",
   "is_shop",
@@ -102,11 +113,22 @@ const BUYER_FLAG_KEYS = ["is_from_buyer", "is_buyer", "from_buyer"];
 const SHOP_TYPE_VALUES = new Set(["shop", "seller", "merchant", "owner"]);
 
 /**
- * Tin này do shop gửi hay khách gửi. Ưu tiên cờ boolean, rồi tới field kiểu
- * (sender_type/author_type), cuối cùng so tên người gửi với tên shop.
- * Mặc định false (coi là của khách) khi không có tín hiệu nào.
+ * Tin này do shop gửi hay khách gửi.
+ *
+ * Payload thật (`Common_Convo_Message`) KHÔNG có cờ nào phân biệt hai phía — chỉ có
+ * `sender_user_id`. Nên phải SO ID: bằng user_id của shop thì là tin đi, hoặc (khi
+ * chưa resolve được shop) khác buyer_id của đơn thì cũng là tin đi — hội thoại chỉ
+ * có 2 phía. Mấy nhánh cờ/tên bên dưới chỉ là lưới đỡ cho payload lạ.
+ *
+ * Cẩn thận: `sender_display_name` là tên HIỂN THỊ ("Custom Delights") chứ không phải
+ * shop_name ("CusGiftsCo") — so hai cái đó với nhau luôn sai, đừng dựa vào.
  */
-function isFromShop(m: EtsyRaw, shopName: string): boolean {
+function isFromShop(m: EtsyRaw, senderId: number, opts: OrderConvoParseOpts): boolean {
+  if (senderId > 0) {
+    if (opts.shopUserId && opts.shopUserId > 0) return senderId === opts.shopUserId;
+    if (opts.buyerId && opts.buyerId > 0) return senderId !== opts.buyerId;
+  }
+
   for (const k of SHOP_FLAG_KEYS) if (m[k] === true) return true;
   for (const k of BUYER_FLAG_KEYS) if (m[k] === true) return false;
 
@@ -114,7 +136,14 @@ function isFromShop(m: EtsyRaw, shopName: string): boolean {
   if (SHOP_TYPE_VALUES.has(type)) return true;
   if (type === "buyer" || type === "customer") return false;
 
-  const sender = firstString(m, ["sender_name", "from_name", "display_name", "author_name"]);
+  const shopName = opts.shopName ?? "";
+  const sender = firstString(m, [
+    "sender_display_name",
+    "sender_name",
+    "from_name",
+    "display_name",
+    "author_name",
+  ]);
   if (shopName && sender && sender.trim().toLowerCase() === shopName.trim().toLowerCase()) {
     return true;
   }
@@ -124,29 +153,31 @@ function isFromShop(m: EtsyRaw, shopName: string): boolean {
 /**
  * Parse RAW convo của trang đơn → MessageItem (cùng type mà khung chat đang dùng).
  *
- * CẢNH BÁO: shape của mission-control/orders/convos/{orderId} chưa được xác nhận bằng
- * response thật, nên parser dò nhiều tên field. Doc gốc luôn được lưu ở
- * order_conversations.etsy → khi có mẫu thật chỉ cần sửa hàm này, KHÔNG phải sync lại.
+ * Shape thật (đã xác nhận trên dữ liệu production, `Common_Convo_Message`):
+ *   { convo_message_id, sender_user_id, sender_display_name, sender_avatar_url,
+ *     message_body (có thể chứa HTML), create_date (unix giây), timestamp ("Sept 8, 2026"),
+ *     is_system_message, is_admin, attachments: [] }
+ * Các tên field khác vẫn được dò làm lưới đỡ. Doc gốc luôn nằm ở `order_conversations.etsy`
+ * → sửa hàm này là đủ, KHÔNG phải sync lại từ Etsy.
  */
-export function parseOrderConvoMessages(
-  root: EtsyRaw,
-  opts: { orderId: number; shopName?: string },
-): MessageItem[] {
+export function parseOrderConvoMessages(root: EtsyRaw, opts: OrderConvoParseOpts): MessageItem[] {
   const shopName = opts.shopName ?? asString(root["shop_name"]);
   const raws = pickRawMessages(root);
 
   const items = raws.map((m, i) => {
-    const fromMe = isFromShop(m, shopName);
+    const senderId =
+      firstNumber(m, ["sender_user_id", "sender_id", "from_user_id", "user_id", "author_id"]) ?? 0;
+    const fromMe = isFromShop(m, senderId, { ...opts, shopName });
     const rawId = firstString(m, [
+      "convo_message_id",
       "conversation_message_id",
       "message_id",
-      "convo_message_id",
       "id",
     ]);
     const numId = firstNumber(m, [
+      "convo_message_id",
       "conversation_message_id",
       "message_id",
-      "convo_message_id",
       "id",
     ]);
     const id = rawId || (numId !== undefined ? String(numId) : `order-${opts.orderId}-${i}`);
@@ -154,24 +185,32 @@ export function parseOrderConvoMessages(
     return {
       id,
       message: brToNewline(decodeHtmlEntities(text)),
-      senderId: firstNumber(m, ["sender_id", "from_user_id", "user_id", "author_id"]) ?? 0,
+      senderId,
       fromMe,
+      // `timestamp` của payload này là chuỗi hiển thị ("Sept 8, 2026") — chỉ dùng khi
+      // thiếu create_date, vì nó mất phần giờ nên sort kém chính xác.
       createDate: toUnixSeconds(
         m["create_date"] ??
           m["created_date"] ??
           m["creation_tsz"] ??
-          m["timestamp"] ??
           m["sent_date"] ??
-          m["date"],
+          m["date"] ??
+          m["timestamp"],
       ),
       messageOrder: firstNumber(m, ["message_order"]) ?? i,
       isSystem: m["is_system_message"] === true,
       images: pickImages(m),
       senderEmail: "",
       senderName:
-        firstString(m, ["sender_name", "from_name", "display_name", "author_name"]) ||
-        (fromMe ? shopName : ""),
+        firstString(m, [
+          "sender_display_name",
+          "sender_name",
+          "from_name",
+          "display_name",
+          "author_name",
+        ]) || (fromMe ? shopName : ""),
       senderAvatar: firstString(m, [
+        "sender_avatar_url",
         "avatar_url",
         "sender_avatar",
         "shop_avatar_url",

@@ -102,6 +102,12 @@ const CARRIER_RULE_INDEXES: IndexDef[] = [
   { keys: { key: 1 }, options: { name: "uq_key", unique: true } },
 ];
 
+const ORDER_MESSAGE_INDEXES: IndexDef[] = [
+  // Khoá tra trạng thái: extension POST status theo id, UI poll cũng theo id.
+  { keys: { id: 1 }, options: { name: "uq_order_message_id", unique: true } },
+  { keys: { created_at: -1 }, options: { name: "idx_created_at" } },
+];
+
 const TRACKING_JOB_INDEXES: IndexDef[] = [
   // Liệt kê job gần nhất + dọn job cũ. Cũng phục vụ sort created_at desc của list lịch sử.
   { keys: { created_at: -1 }, options: { name: "idx_created_at" } },
@@ -206,6 +212,7 @@ export async function ensureIndexes(db: Db): Promise<void> {
   await createIndexes(db, "sheet_configs", SHEET_CONFIG_INDEXES);
   await createIndexes(db, "sheet_rows", SHEET_ROW_INDEXES);
   await createIndexes(db, "message_templates", MESSAGE_TEMPLATE_INDEXES);
+  await createIndexes(db, "order_messages", ORDER_MESSAGE_INDEXES);
   await createIndexes(db, "tracking_jobs", TRACKING_JOB_INDEXES);
   await createIndexes(db, "tracking_import_profiles", TRACKING_IMPORT_PROFILE_INDEXES);
   await createIndexes(db, "carrier_rules", CARRIER_RULE_INDEXES);

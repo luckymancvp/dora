@@ -24,6 +24,41 @@ export async function resolveShopIdByName(shopName: string): Promise<number | nu
   }
 }
 
+// Cache shop_name → user_id shop (TTL ngắn) cho resolveShopUserIdByName.
+const shopUserIdCache = new Map<string, { id: number | null; at: number }>();
+const SHOP_USER_ID_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Lấy user_id của SHOP theo tên shop (data.context.data.current_user.user_id).
+ * Khác resolveShopIdByName: đây là id người dùng, chính là `sender_user_id` trên
+ * mỗi tin nhắn Etsy — dùng để biết tin nào của shop, tin nào của khách.
+ */
+export async function resolveShopUserIdByName(shopName: string): Promise<number | null> {
+  const name = shopName.trim();
+  if (!name) return null;
+
+  // Panel "Nhắn khách" poll tới 9 lần/24s và mỗi lần đọc lại hội thoại theo đơn →
+  // cache TTL ngắn để khỏi query dora-master.stores 9 lần cho cùng 1 shop.
+  const hit = shopUserIdCache.get(name);
+  if (hit && Date.now() - hit.at < SHOP_USER_ID_TTL_MS) return hit.id;
+
+  try {
+    const coll = await getStoresCollection();
+    const doc = await coll.findOne({
+      type: "Etsy",
+      $or: [{ name }, { "data.context.data.current_shop.shop_name": name }],
+    } as Parameters<typeof coll.findOne>[0]);
+    const raw = doc?.data?.context?.data?.current_user?.user_id;
+    const id = typeof raw === "number" && raw > 0 ? raw : null;
+    // Cache cả kết quả null: shop chưa có trong stores thì 9 lần poll cũng vẫn không có.
+    shopUserIdCache.set(name, { id, at: Date.now() });
+    return id;
+  } catch (e) {
+    console.warn("[resolveShopUserIdByName] failed:", (e as Error)?.message);
+    return null;
+  }
+}
+
 /**
  * Map shop_id → shop_name từ dora-master.stores (dựng 1 lần để resolve shop
  * của đơn không cần query từng doc). Bỏ qua store thiếu shop_id/shop_name.

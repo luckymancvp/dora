@@ -6,6 +6,7 @@ import {
 } from "@/lib/db/collections";
 import { getConversationMessages } from "@/lib/services/message-read";
 import { parseOrderConvoMessages } from "@/lib/services/order-conversation-sync";
+import { resolveShopUserIdByName } from "@/lib/services/shop-read";
 import { asNumber, asString, decodeHtmlEntities, firstString, getPath } from "@/lib/services/etsy-utils";
 import type {
   ConversationDoc,
@@ -113,9 +114,15 @@ export async function getOrderConversation(orderId: number): Promise<OrderConver
     };
   }
 
+  // Payload trang đơn chỉ có `sender_user_id`, không có cờ shop/khách → phải tra
+  // user_id của shop để biết tin nào là tin đi. buyerId là lưới đỡ khi shop chưa
+  // có trong dora-master.stores (hội thoại chỉ 2 phía nên "khác khách" = "của shop").
+  const shopUserId = doc.shop_name ? await resolveShopUserIdByName(doc.shop_name) : null;
   const messages = parseOrderConvoMessages(doc.etsy ?? {}, {
     orderId,
     shopName: doc.shop_name ?? "",
+    shopUserId: shopUserId ?? undefined,
+    buyerId,
   });
   return {
     conversationId: doc.conversation_id ?? null,

@@ -103,6 +103,31 @@ export interface MessageSyncBody {
 }
 
 /**
+ * Collection `order_messages` — 1 doc / 1 lần bấm "Nhắn khách" ở trang Orders.
+ * Trước đây luồng này fire-and-forget: extension báo DONE/FAILED về một endpoint
+ * KHÔNG tồn tại ở repo nào, nên gửi hỏng (ảnh lỗi, Etsy từ chối) mà UI vẫn báo
+ * thành công. Doc này là nơi trạng thái thật được ghi để UI đọc lại.
+ */
+export interface OrderMessageDoc {
+  _id?: ObjectId;
+  /** randomUUID do POST /api/orders/message sinh — khoá tra trạng thái. */
+  id: string;
+  shop_name: string;
+  order_id: string;
+  message: string;
+  attachments: string[];
+  /** Email nhân viên bấm gửi; rỗng khi gọi bằng x-api-key (Apps Script). */
+  sender_email: string;
+  status: MessageStatus;
+  /** convo_id Etsy mà extension đã gửi vào (0 nếu chưa biết). */
+  convo_id?: number;
+  /** Lý do thất bại do extension báo về. */
+  error?: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
  * Body của POST /v1/extension/order-conversations/sync.
  * `convo` là payload RAW của Etsy mission-control (orders/convos/{orderId}) — KHÔNG map
  * ở extension vì shape chưa chốt; parse ở server để sửa được mà không phải build lại extension.

@@ -1,129 +1,150 @@
-# 04 — QA tích hợp: so khớp chéo bản sửa VERIFY (add tracking)
+# 04 — QA tích hợp: "Dán ảnh vào panel Nhắn khách" (Orders)
 
-**Phạm vi:** seam S1–S5 của `_workspace/01_architect_contract.md §5`, sau khi backend (`lib/services/tracking.ts`) và frontend (`app/tracking/page.tsx`, `components/tracking/HistorySection.tsx`) báo xong.
-**Phương pháp:** đọc đồng thời 4 tầng + chạy CODE THẬT (trích nguyên văn `classifyVerify`/`indexShipments`/`carrierMatches`/`summarizeTrackingOrders` từ file nguồn, compile bằng tsc của repo rồi chạy) + truy vấn MongoDB THẬT (read-only).
+Ngày: 2026-09-17 · Đầu vào: `01_architect_contract.md` (S1–S8), `02_backend_changes.md`, `03_frontend_changes.md`
+Phạm vi kiểm: dora-1 + ranh giới ngoài repo (`D:\Pamo\DORA\dora-extension`) + hồi quy `order-conversation*` / `shop-read`.
+
+## 0. Kiểm chứng bằng thực thi
+
+| Lệnh | Kết quả |
+|------|---------|
+| `npx tsc --noEmit` | **exit 0**, 0 lỗi |
+| `npx next build` | **✓ Compiled successfully in 8.0s**, 0 error/warning |
+| `next dev -p 3098` + curl 7 case vào chính handler `POST /api/orders/message` | xem bảng dưới |
+
+⚠️ `next.config.mjs:3-5` đặt `typescript: { ignoreBuildErrors: true }` → **`next build` KHÔNG typecheck**. Chỉ `tsc --noEmit` mới là bằng chứng về type. Đã chạy cả hai.
+
+### Kết quả curl (chạy thật, không phải suy luận)
+
+`/api/orders/message` bị middleware chặn (xem F1), nên đã dựng alias tạm `app/v1/qatmpqa/route.ts` re-export đúng handler đó (đường `/v1/*` được miễn auth), chạy xong **đã xoá** (`git status` sạch).
+
+| # | Input | HTTP | Body |
+|---|-------|------|------|
+| T1 | `message:"   "` + 1 ảnh | **400** | `{"error":"shopName, orderId và message bắt buộc"}` → **S5 invariant ĐÚNG** |
+| T2 | 11 URL hợp lệ | **400** | `{"error":"Tối đa 10 ảnh mỗi tin"}` → **S8 chốt chặn ĐÚNG** |
+| T3 | `attachments:"https://a.jpg"` (string) | 409 | không 400 → tương thích caller cũ ĐÚNG |
+| T4 | `["blob:…","data:…",123,null,"https://a/1.jpg"]` | 409 | rác bị lọc, không 400 |
+| T5 | đúng 10 URL | 409 | qua được ngưỡng |
+| T6 | không có `attachments` | 409 | caller cũ Apps Script ĐÚNG |
+| T7 | `x-api-key: WRONG` | 401 | chặn ĐÚNG |
+
+(409 = `shop_offline`, dùng shop giả `__qa_no_such_shop__` nên không có tin nào thật sự được gửi đi.)
+
+## 1. Finding — CHẶN MERGE
+
+Không có finding nào **trong phần code của 2 agent** ở mức chặn merge. Hai mục dưới nằm ở phía extension / middleware và cần quyết định trước khi bật tính năng cho user.
+
+### F1 — `x-api-key` của `/api/orders/message` là code chết (middleware chặn trước)
+
+- **Seam:** S1 (UI/máy → route) · **Tầng lệch:** 2 (route) vs middleware
+- **Bằng chứng:**
+  - `proxy.ts:16-23` — danh sách miễn auth chỉ có `/api/auth`, `/api/health`, `/api/uploads`, `/api/cron`, `/v1/`. **Không có `/api/orders/message`.**
+  - `app/api/orders/message/route.ts:11-18` — nhánh `viaApiKey` chỉ chạy sau khi middleware cho qua.
+  - Thực nghiệm: `POST /api/orders/message` kèm `x-api-key` ĐÚNG → **`HTTP/1.1 307` + `location: /login`**, chưa từng chạm route.
+- **Mức độ:** **nên sửa (không do feature này gây ra — tiền sử, `proxy.ts` không nằm trong diff)**. Nhưng nó **vô hiệu hoá toàn bộ mục "tương thích caller Apps Script"** ở `02_backend_changes.md` và khiến 6/6 lệnh curl trong báo cáo đó không chạy được như mô tả.
+- **Cách sửa:** thêm vào `proxy.ts:16-22` nhánh cho request mang header `x-api-key` (route đã tự verify key), hoặc tối thiểu `pathname === "/api/orders/message"`. Không nên mở cả `/api/*`.
+
+### F2 — Extension gửi tin ảnh với `message` RỖNG ở nhánh đơn chưa có hội thoại
+
+- **Seam:** S5 · **Tầng lệch:** extension
+- **Bằng chứng:** `D:\Pamo\DORA\dora-extension\libs\ably.js:454-463` — sau `createOrderConvoMessage` (tin text), ảnh đi ở tin thứ hai:
+  `await sendMessage(finalConvoId, '', imageIds);`
+- Luồng Messenger đang chạy tốt (`ably.js:568`) **luôn có text** (`data.message.message`), nên chưa có bằng chứng Etsy chấp nhận `message: ""` ở `POST /api/v3/ajax/member/conversations/{id}`.
+- **Mức độ:** **chặn merge nếu chưa test tay 1 đơn chưa-có-hội-thoại**. Đây là nhánh DUY NHẤT chưa từng chạy trong production.
+- **Cách sửa (nếu Etsy từ chối):** truyền lại `messageBody` hoặc một chuỗi tối thiểu thay cho `''`.
+
+## 2. Finding — NÊN SỬA
+
+### F3 — Trạng thái gửi rơi vào hư không: `extension/order-messages/status/{id}` không tồn tại ở đâu cả
+
+- **Seam:** S2/S3 (vòng phản hồi sau publish) · **Tầng lệch:** extension ↔ backend
+- **Bằng chứng:**
+  - Gọi: `ably.js:466-471` (`status: 'DONE'`) và `ably.js:483-488` (`status: 'FAILED'`) qua `callBackend` → base `env.BACKEND_ENDPOINT` (Go backend).
+  - Go backend `dora-backend\modules\extension\routes.go:11-14` chỉ có `messages/status/:id` và `trackings/status/:id`. `grep -rn "order-messages" --include=*.go` → **0 hit**.
+  - dora-1 cũng không có: `app/v1/**` chỉ có `messages/status/[id]`, `trackings/status/[id]`.
+  - `libs/backend-api.js:8-37` — `callBackend` nuốt lỗi (`catch → return null`) nên 404 không gây FAILED giả, nhưng **không ai nhận được trạng thái**.
+- **Hệ quả kết hợp với fire-and-forget:** `MessageBuyerDialog.tsx:197-203` toast "Đã gửi…" ngay khi Ably nhận publish. Ảnh upload lên Etsy hỏng → user **không bao giờ biết**. Rủi ro này MỚI, vì trước đây panel chỉ gửi text (một bước), giờ có 2-3 bước có thể hỏng giữa chừng.
+- **Mức độ:** nên sửa.
+- **Cách sửa:** thêm route `POST /v1/extension/order-messages/status/[id]` ở dora-1 (đối xứng `trackings/status/[id]` đã có) + đổi `callBackend` → `callDoraChat` ở `ably.js:467,484`; hoặc bỏ hẳn hai lời gọi đó và ghi rõ trong JSDoc rằng không có kênh báo trạng thái.
+
+### F4 — `upload2Etsy` không kiểm `response.ok` → ảnh hỏng biến thành "gửi tin rỗng" im lặng
+
+- **Seam:** S3 → Etsy · **Tầng lệch:** extension
+- **Bằng chứng:** `libs/etsy-message.js:83-85` — `const result = await uploadResponse.json(); return result.image_id;`, không kiểm `uploadResponse.ok`. Etsy trả lỗi JSON → `image_id` = `undefined` → `uploadOrderAttachments` (`etsy-message.js:211-216`) trả `{0: undefined}` → `sendMessage` (`etsy-message.js:20-23`): `Object.keys(...).length > 0` là TRUE nhưng `JSON.stringify({0: undefined})` === `"{}"` → tin gửi đi **không có ảnh**, không lỗi.
+- Ở nhánh F2 hệ quả nặng hơn: gửi tin **rỗng + không ảnh**.
+- **Mức độ:** nên sửa (tiền sử, dùng chung với Messenger, nhưng feature mới làm nó lộ ra).
+- **Cách sửa:** trong `upload2Etsy` thêm `if (!uploadResponse.ok) throw ...` và `if (!result.image_id) throw ...`.
+
+### F5 — UI không chặn > 10 ảnh → upload lãng phí rồi mới 400
+
+- **Seam:** S8 · **Tầng lệch:** 4 (component)
+- **Bằng chứng:** `components/orders/MessageBuyerDialog.tsx:147-169` (`onPaste` append vô điều kiện), `:174-186` (`send` không đếm). Route chặn ở `app/api/orders/message/route.ts:44-46`.
+- Ảnh thứ 11 vẫn đã nằm vĩnh viễn trên Vercel Blob (tốn tiền, không ai xoá) trước khi user thấy lỗi.
+- **Cách sửa:** trong `onPaste` cắt `imageFiles` theo `10 - attachments.length` + `toast.error("Tối đa 10 ảnh mỗi tin")`.
+
+### F6 — File sai MIME bị bỏ IM LẶNG khi dán nhiều ảnh
+
+- **Seam:** S7 · **Tầng lệch:** 4 ↔ `lib/upload-image.ts`
+- **Bằng chứng:** `lib/upload-image.ts:26` — `if (f.type && !ALLOWED_IMAGE_TYPES.has(f.type)) continue;` (bỏ qua, không báo). `MessageBuyerDialog.tsx:158-161` chỉ toast khi `urls.length === 0`.
+- Dán 3 ảnh trong đó 1 ảnh `image/bmp`/`image/svg+xml` (lọt qua bộ lọc `type.startsWith("image/")` ở `MessageBuyerDialog.tsx:149`) → mất 1 ảnh, **không thông báo**.
+- **Cách sửa:** `uploadImageFiles` trả `{ urls, skipped }`, hoặc so `urls.length !== imageFiles.length` ở caller để toast cảnh báo.
+
+### F7 — `resolveShopUserIdByName` gọi lại mỗi request, không cache (hồi quy)
+
+- **Seam:** thread panel · **Tầng lệch:** 1 (service)
+- **Bằng chứng:** `lib/services/order-conversation.ts:120` gọi mỗi lần `getOrderConversation`. Panel poll tới **9 lần/24s** (`MessageBuyerDialog.tsx:24-25,116-127`) → 9 query `dora-master.stores` cho cùng 1 shop.
+- `lib/services/shop-read.ts:75-77` đã có sẵn mẫu cache TTL 5 phút cho `resolveShopNameByUserId`, nhưng `resolveShopUserIdByName` (`shop-read.ts:32-47`) không dùng.
+- **Cách sửa:** thêm `Map<string, {id, at}>` TTL 5 phút y hệt mẫu ngay bên dưới nó.
+
+## 3. Ghi nhận (không chặn, nên biết)
+
+- **G1 — `saveOrderConversations` gọi `parseOrderConvoMessages` thiếu opts mới.** `lib/services/order-conversation-sync.ts:254` truyền `{ orderId, shopName }`, không có `shopUserId`/`buyerId`. **Hiện KHÔNG phải bug**: kết quả chỉ dùng `.length` để ghi `message_count`, mà `fromMe` không ảnh hưởng số lượng. Đã grep toàn repo: đúng **2 caller** (`order-conversation-sync.ts:254`, `order-conversation.ts:121`), không sót chỗ nào. Rủi ro drift nếu sau này lưu luôn mảng parsed — nên thêm comment tại chỗ.
+- **G2 — Không resolve được cả `shopUserId` lẫn `buyerId` → mọi tin `fromMe=false`.** `order-conversation.ts:61-63` lấy `buyerId` từ `etsy_orders` (projection `:53` có đủ `data.buyer` + `data.buyer_id` ✓). Đơn không có trong `etsy_orders` **và** shop chưa có trong `dora-master.stores` → `isFromShop` (`order-conversation-sync.ts:126-151`) rơi xuống lưới đỡ cờ/tên, mà payload thật không có cờ nào → thread dồn hết về phía khách. Suy giảm có kiểm soát, đúng như comment đã ghi.
+- **G3 — Whitelist MIME nhân bản 3 nơi.** `lib/upload-image.ts:9-14` ≡ `app/api/uploads/route.ts:7` ≡ `components/messenger/ConversationView.tsx:29`. **S7 hiện KHỚP CHÍNH XÁC** (jpeg/png/gif/webp, đã so từng phần tử). Contract cố ý không refactor ConversationView; ghi lại để lần sau gom về `lib/upload-image.ts`.
+- **G4 — Ảnh trên Blob không bao giờ được dọn.** `MessageBuyerDialog.tsx:171-172` `removeAttachment` chỉ bỏ khỏi state; đóng panel không gửi cũng vậy. Giống hành vi Messenger hiện tại.
+- **G5 — `uploading` là boolean, không phải bộ đếm.** `MessageBuyerDialog.tsx:154-168`: dán lần 2 khi lần 1 chưa xong → lần 1 `finally` set `false` trong khi lần 2 còn chạy → nút Gửi mở sớm, có thể gửi thiếu ảnh. Xác suất thấp; sửa bằng `useRef` đếm upload đang chạy.
+- **G6 — Ảnh vừa gửi có thể chưa hiện lại trong thread.** `ably.js:476` gọi `fetchAndPostOrderConvos([orderId])` NGAY sau `sendMessage` (Etsy có thể chưa index tin mới), và `pickImages` (`order-conversation-sync.ts:67-90`) dò `attachments[].url / image_data.url / full_url / src / thumbnail_url` — shape attachment thật của `mission-control/orders/convos` **chưa xác nhận bằng dữ liệu thật**. Cần nhìn 1 thread thật sau khi gửi ảnh. (Mẫu đã chứng minh ở Messenger: `lib/services/message-read.ts:84-100` cũng dùng `image_data.url`/`url` → khả năng cao khớp.)
+- **G7 — `next build` không typecheck** (`next.config.mjs:3-5`). Quy trình QA phải luôn chạy `npx tsc --noEmit` riêng.
+
+## 4. Seam đã kiểm và ĐẠT
+
+| Seam | Kết luận | Bằng chứng đối chiếu |
+|------|----------|----------------------|
+| **S1** `attachments` UI→route | ĐẠT — cùng tên, cùng `string[]` | `MessageBuyerDialog.tsx:181-186` (state `:38` là `string[]`) ↔ `route.ts:21-26,40-43` |
+| **S2** route→`publishSendOrderMessage` | ĐẠT — route LUÔN truyền mảng (kể cả rỗng), type bắt buộc không optional | `route.ts:49-54` ↔ `ably-publish.ts:187-190` |
+| **S3** payload Ably ↔ extension đọc | ĐẠT — khớp **từng field**: `id` / `order_id` / `message` / `attachments` / `clientId` | publish `ably-publish.ts:199` ↔ đọc `ably.js:419-428` |
+| **S3b** shape `image_ids` | ĐẠT — `uploadOrderAttachments` (`etsy-message.js:211-216`) tạo `{0:id,1:id}` **y hệt** luồng Messenger đang chạy tốt (`ably.js:549-564`), cùng đi vào `sendMessage` (`etsy-message.js:20-23`) → `attachments: JSON.stringify({...})`. Không ảnh → `{}` → `'{}'` ⇒ không hồi quy tin text. | |
+| **S4** URL public Blob | ĐẠT — `access:"public"` (`lib/upload-image.ts:27-31`); extension `fetch(link)` (`etsy-message.js:54`) đúng cơ chế đã chạy production ở Messenger (cùng `/api/uploads`, cùng `upload()`: `ConversationView.tsx:166-169`) | |
+| **S5** `message` non-empty | ĐẠT CẢ 2 TẦNG — UI `MessageBuyerDialog.tsx:175` + `:348`; route `route.ts:30-35`. **Đã chạy thật: T1 → 400.** Validate message đứng TRƯỚC validate attachments nên message rỗng + 11 ảnh vẫn ra lỗi message. | |
+| **S6** `conversationId` không chặn gửi | ĐẠT — chỉ dùng ở `MessageBuyerDialog.tsx:198` (toast) và `:213-214` (link Messenger); `send()` (`:174-175`) không đụng tới | |
+| **S7** whitelist MIME | ĐẠT — 4/4 khớp chính xác: `lib/upload-image.ts:9-14` ↔ `app/api/uploads/route.ts:7` | |
+| **S8** giới hạn 10 | ĐẠT ở chốt chặn thật (route, **T2 → 400 đúng text**); UI chưa chặn → F5 | |
+| **DB routing** | ĐẠT — không dính mẫu "sai DB": `stores`, `etsy_orders`, `order_conversations` đều `STORES_DB_NAME` = `dora-master` (`lib/db/collections.ts:155-158,164-167,185-188`). Feature này không đọc/ghi Mongo. | |
+| **Thứ tự nạp script extension** | ĐẠT — `manifest.json:30-39`: `etsy-message.js` → `content.js` → `ably.js`, nên `uploadOrderAttachments` / `getOrderConvoSafe` / `createOrderConvoMessage` / `fetchAndPostOrderConvos` đều có mặt khi `ably.js` gọi | |
+| **`order_id` string↔number** | ĐẠT — dora-1 gửi string (`route.ts:28`), extension `Number(orderId)` trước khi POST về (`content.js:860,866`), dora-1 `asNumber` chấp nhận cả chuỗi số (`lib/services/etsy-utils.ts:4-10`) → không rơi vào nhánh `skipped` của `saveOrderConversations` | |
+
+## 5. Hồi quy `order-conversation*` / `shop-read`
+
+- Grep toàn repo: `parseOrderConvoMessages` có đúng **2 caller**; `OrderConvoParseOpts` export và dùng nhất quán; `resolveShopUserIdByName` có đúng 1 caller. **Không có caller nào thiếu opts mới gây lỗi** (chi tiết G1).
+- `saveOrderConversations` vẫn parse đúng: `unwrapConvo` → `pickRawMessages` → `message_count`; `pickConversationId` không đổi; `$set`/`$setOnInsert` giữ nguyên (`order-conversation-sync.ts:246-270`). Đã gọi thật `POST /v1/extension/order-conversations/sync` với `{"orders":[]}` → **200**.
+- `isFromShop` đổi chữ ký (`m, senderId, opts`) — mọi call site đã cập nhật (`order-conversation-sync.ts:170`), `tsc` sạch.
+- Thứ tự ưu tiên id mới (`convo_message_id` trước) và `createDate` (đẩy `timestamp` xuống cuối) hợp lý với shape thật đã ghi trong JSDoc.
+
+## 6. Việc cần làm trước khi bật cho user
+
+1. **Test tay nhánh F2** (đơn CHƯA có hội thoại + dán ảnh) — nhánh duy nhất chưa từng chạy.
+2. Quyết định F1 (Apps Script còn dùng `/api/orders/message` không) và F3 (có cần kênh báo trạng thái không).
+3. F4 / F5 / F6 là sửa nhỏ, độc lập nhau.
 
 ---
 
-## 0. Kết quả kiểm chứng bắt buộc (nguyên văn)
+## Xử lý sau QA (orchestrator)
 
-```
-$ npx tsc --noEmit
-EXIT=0        (không có output)
-
-$ npm run build
-… ƒ /api/tracking/jobs
-  ƒ /api/tracking/jobs/[id]
-  ƒ /v1/extension/trackings/shipments-result
-  ○ /tracking
-BUILD_EXIT=0
-```
-
-Cả hai sạch. Không còn `TS2305 VerifyFailureCell` (đã export ở `HistorySection.tsx:356`), không còn `TS2739` ở `summarizeJob`.
-
-## 0.1 Ca 4171062664 — chạy trên code thật
-
-Payload mô phỏng đúng normalize của extension (`dora-extension/libs/ably.js:362-372`), đơn `other_carrier = "US Standard"`, `tracking_number = 9214490416422002819594`:
-
-| Ca | `carrier_name` Etsy | `is_shipped` | Kết quả THẬT |
-|---|---|---|---|
-| A | `US Standard` | `false` | **`NOT_SHIPPED`** — `Etsy nhận tracking 9214490416422002819594 (US Standard) nhưng CHƯA đánh dấu đã ship — đơn vẫn hiện "No tracking" trên Etsy` |
-| B | `USPS` | `false` | **`CARRIER_MISMATCH`** — `Mã tracking khớp nhưng carrier lệch — đã gửi "US Standard", Etsy ghi "USPS"` |
-| C | `""` | `false` | **`CARRIER_MISMATCH`** — `… Etsy ghi "?"` |
-| D | *(không shipment)* | — | **`NOT_FOUND`** |
-| E | shipment có nhưng `tracking_code=""` | `false` | **`NOT_FOUND`** |
-| F | `US Standard` | `undefined` | `VERIFIED` (thoái hoá extension cũ, đúng contract §4) |
-
-→ **Ca 4171062664 KHÔNG còn ra `VERIFIED` ở mọi biến thể thực tế.** Bug gốc đã đóng.
-
----
-
-## FINDING
-
-### CHẶN MERGE
-Không có. Build/typecheck sạch, không seam nào lệch field, counts S2 = S3.
-
-### NÊN SỬA
-
-**N1 · S5 · tầng 1↔payload extension — lý do của `=== false` không còn đúng, cờ là lá chắn DUY NHẤT**
-Backend chọn `is_shipped === false` (không phải `!== true`) với lập luận "extension cũ không gửi field → báo lỗi giả hàng loạt" (`02_backend_changes.md §2`).
-Bằng chứng code THẬT đang chạy: `dora-extension/libs/ably.js:369` và `libs/etsy-tracking.js:233` đều là
-`is_shipped: !!(t.isShipped ?? false)` → **luôn là boolean, không bao giờ `undefined`**.
-Hệ quả: (a) lựa chọn của backend KHÔNG bỏ lọt ca 4171062664 (ca A ở trên đã chứng minh) — quyết định đúng, giữ nguyên; (b) nhưng nhánh `undefined` **không bao giờ chạy với extension hiện tại**, nó chỉ che cho bản extension thật sự cũ (thiếu hẳn field). Etsy trả thiếu `tracking.isShipped` sẽ bị extension ép thành `false` → dora-1 kết luận `NOT_SHIPPED`, đúng cái "báo động giả" mà cờ định tránh.
-**Sửa gợi ý:** sửa comment `lib/services/tracking.ts:307-309` cho đúng sự thật (nhánh undefined chỉ dành cho extension đời cũ), và coi `TREAT_NOT_SHIPPED_AS_FAILURE` là lá chắn duy nhất — chạy canary 1 shop trước khi bật rộng.
-
-**N2 · S1 · tầng 1→4 — `message` của đơn SKIPPED sau khi add KHÔNG BAO GIỜ hiển thị, job COMPLETED vẫn báo "đang xác minh…"**
-Service ghi `verify="SKIPPED"` + `message` ở 2 chỗ: `lib/services/tracking.ts:422-425` (GET shipments lỗi ở phase VERIFY) và `:574-578` ("Đã add nhưng không verify được (shop offline)").
-FE không có nhánh nào cho ca này:
-- `app/tracking/page.tsx:911-912` → rơi vào `o.add_status === "DONE"` → in **"Đã gửi, đang xác minh…"**, mà poll đã dừng ở `page.tsx:573` khi `phase === "COMPLETED"` → đứng vĩnh viễn.
-- `components/tracking/HistorySection.tsx:401-402` → in "Đã gửi".
-Ca shop-offline (`:573-581`) KHÔNG set `job.error` nên cũng không có banner đỏ — người vận hành tưởng hệ thống đang chạy, trong khi đơn chưa hề được xác minh.
-**Sửa gợi ý (FE):** trước nhánh `add_status === "DONE"`, thêm `if (o.verify === "SKIPPED" && o.message)` → icon xám/warning + `VERIFY_LABEL.SKIPPED` + `o.message`. Áp dụng cho CẢ HAI cell.
-
-**N3 · S1 · tầng 1 — nhánh carrier không có cờ hạ cấp, message "?" vô nghĩa khi Etsy trả carrier rỗng**
-`carrierMatches` (`lib/services/tracking.ts:75-79`) trả `false` khi carrier Etsy rỗng → `CARRIER_MISMATCH` màu đỏ với message `… Etsy ghi "?"` (ca C). Logic phòng thủ đúng, nhưng thông điệp không nói cho người dùng biết là **Etsy không trả tên carrier**, chứ không phải "carrier lệch"; và khác với `is_shipped`, nhánh carrier KHÔNG có hằng số hạ cấp nào nếu Etsy đổi cách đặt tên hàng loạt.
-Dữ liệu thật (28 shipment trong `dora-master.order_tracking.trackings[]`): **0 bản ghi có `carrier_name` rỗng**, mọi giá trị đều là chuỗi người dùng tự nhập được Etsy trả nguyên văn (`USPS`, `USSS`, `uus`/`UUS`, `uss`, `UPPS`, `Vietnam Post`, `Australia Post`, `Royal Mail`, `17track`) → giả định A3 **được dữ liệu thật ủng hộ**, `normalizeCarrier` (lowercase) xử lý đúng ca `uus` vs `UUS`. Rủi ro thấp nhưng nên tách message riêng.
-**Sửa gợi ý:** nếu `normalizeCarrier(etsy) === ""` → message `Etsy không trả tên carrier cho shipment này — không xác minh được carrier (đã gửi "${other_carrier}")`.
-
-### GHI NHẬN
-
-**G1 · A2 vẫn CHƯA được xác nhận đủ — số thật: 19 `true` / 9 `false`**
-`dora-master.order_tracking` (ghi bởi CÙNG normalizer của extension): `is_shipped=true` 19 bản ghi, `false` 9 bản ghi. Vậy Etsy **có** trả `true` thường xuyên → `TREAT_NOT_SHIPPED_AS_FAILURE = true` không biến mọi đơn thành lỗi. Nhưng 9/28 ≈ 32% là `false`, và tập này trộn đơn cũ/đơn sync thường, không phải "ngay sau khi add" → chưa chứng minh được A2. **Đề nghị:** chạy 1 shop canary, đọc `counts.not_shipped`; nếu tăng vọt thì đổi `lib/services/tracking.ts:39` thành `false` (đã kiểm chứng ở G2 là đủ 1 dòng).
-
-**G2 · Cờ `TREAT_NOT_SHIPPED_AS_FAILURE` THỰC SỰ là chỗ sửa duy nhất — đã kiểm chứng**
-`grep -rn "is_shipped|isShipped" app lib components`: ngoài `lib/services/tracking.ts`, chỉ còn `components/tracking/HistorySection.tsx:336-337` (trong `EtsyEcho`, chỉ chọn CHUỖI hiển thị) và các comment. Không tầng nào (counts, badge, màu, message) tự suy ra "chưa ship". `summarizeTrackingOrders` chỉ đọc `verify/selected/add_status`. Contract §4 được tuân thủ.
-(`lib/services/orders-tracking.ts:41` cũng có `is_shipped` nhưng thuộc luồng Orders khác, không tham gia quyết định verify.)
-
-**G3 · S2 ↔ S3 counts — KHỚP TUYỆT ĐỐI, projection đủ field**
-`HistoryProjection.orders` khai `TrackingOrderCountFields` (`tracking.ts:151`) và projection Mongo lấy đúng `orders.selected/verify/add_status` (`:187-189`) — đúng bằng tập field `summarizeTrackingOrders` đọc (`lib/types/tracking.ts:198-212`). Chạy thật trên cùng job (1 NOT_SHIPPED + 1 VERIFIED + 1 SKIPPED/không chọn):
-```
-S3 (client, orders đầy đủ) : {"total":3,"selected":2,"verified":1,"mismatch":1,…,"not_shipped":1,…}
-S2 (server, sau projection): {"total":3,"selected":2,"verified":1,"mismatch":1,…,"not_shipped":1,…}
-KHỚP: true
-```
-Không có bug "counts lịch sử sai âm thầm". `counts.not_shipped` mà `CountBadges` render được projection phủ.
-
-**G4 · Backward-compat job cũ — không vỡ, không NaN**
-Chạy thật `summarizeTrackingOrders`:
-- doc legacy `verify:"MISMATCH"` → `mismatch:1` (vào badge "N lệch"), render qua `VerifyFailureCell` với nhãn `VERIFY_LABEL.MISMATCH = "Lệch tracking"`, icon đỏ. `failureBreakdown` (`page.tsx:120-121`) in phần dư là "Lệch tracking: N". Đúng contract.
-- `verified` vắng mặt → `EtsyEcho` trả `null`, không render gì (`HistorySection.tsx:334`). `is_shipped` `undefined` **không** bị render thành "chưa ship" (`:336-337` so `=== true`/`=== false`). ✔
-- Không có giá trị nào ra `NaN`/`undefined` trong counts.
-- **Lưu ý:** doc thiếu HẲN field `verify` → mọi count = 0 trong im lặng (`total/selected` vẫn đúng), UI rơi vào nhánh "—". DB thật hiện có **0 doc** như vậy (`orders.verify $exists:false` = 0) nên chỉ là rủi ro lý thuyết.
-
-**G5 · Chọn shipment tốt nhất — biểu thức ba ngôi ĐÚNG như mô tả**
-`lib/services/tracking.ts:350-354`: `(carrierMatch ? 4 : 0) + (is_shipped===true ? 2 : is_shipped===undefined ? 1 : 0)`. Điểm tối đa khi KHÔNG khớp carrier là 2 < 4 = điểm tối thiểu khi khớp carrier ⇒ khớp carrier luôn thắng, không có ca đảo thứ tự. Chạy thật:
-- shipment CŨ mã khác + shipment MỚI đúng → `VERIFIED` (không bị tracking cũ đè). ✔
-- 2 shipment cùng mã: cũ (carrier lệch, shipped) vs mới (carrier khớp, chưa ship) → `NOT_SHIPPED` (ưu tiên carrier — đúng thiết kế). ✔
-- 2 shipment cùng mã + cùng carrier khớp, một `false` một `true` → `VERIFIED`. ✔
-- mọi shipment khớp mã đều lệch carrier → `CARRIER_MISMATCH`. ✔
-
-**G6 · `CODE_MISMATCH` nhiều mã — FE KHÔNG render như mã đơn lẻ, nhưng ghép carrier gây hiểu nhầm**
-`verified.code = "AAA111, BBB222"` (`tracking.ts:336`) đi vào `EtsyEcho` → `Etsy đang có: AAA111, BBB222 · USPS`, thẻ `<span className="block text-xs text-muted-foreground">`, **không font-mono**, không nằm trong ngữ cảnh "mã đơn lẻ" → không đọc nhầm thành 1 mã. Hai điểm nhỏ:
-1. `carrier_name` chỉ là của `list[0]` nhưng đứng cạnh TOÀN BỘ danh sách mã → ngầm hiểu mọi mã cùng carrier đó.
-2. `o.message` đã liệt kê y hệt danh sách mã ⇒ dòng `EtsyEcho` lặp lại thông tin.
-**Sửa gợi ý (FE, không chặn):** trong `EtsyEcho`, nếu `value.code.includes(", ")` thì bỏ phần carrier (hoặc đổi thành `Etsy đang có N mã: …`).
-
-**G7 · Rủi ro `NOT_FOUND` giả từ phía extension (ngoài phạm vi repo này)**
-`ably.js:354-365` suy `order_id` từ map ngược `ordersToShipments`; shipment không có trong map → `order_id = ''` → `indexShipments` (`tracking.ts:89-91`) bỏ qua → đơn ra `NOT_FOUND` dù Etsy có tracking. Hướng lỗi AN TOÀN (báo động thừa, không báo VERIFIED giả) nên chỉ ghi nhận. KHÔNG sửa repo extension.
-
-**G8 · DB thật là `dora`, KHÔNG phải `meta_local` như contract A4 ghi**
-`.env.local` đặt `MONGODB_DB="dora"`; mặc định trong code là `meta_local` (`lib/db/collections.ts:21`). Kiểm chứng: `dora.tracking_jobs` có 13 job, `meta_local.tracking_jobs` có **0**. Contract §8 A4 và `02_backend_changes.md §4` ghi "DB `meta_local`" → ai debug theo tài liệu sẽ soi nhầm DB rỗng. Chỉ là sai tài liệu, code đúng (`getTrackingJobsCollection` → `getDb()` → env). `tracking_jobs` không đụng `dora-master` ✔.
-
-**G9 · Hai tab mô tả lệch nhau ở 1 ca nhỏ (tồn tại từ trước)**
-Đơn `precheck="EXISTS"`, không chọn: tab Lịch sử in "Đã có sẵn — không add" (`HistorySection.tsx:393-399`), tab job đang chạy in "Bỏ qua" (`page.tsx:917-918`) — do thứ tự nhánh khác nhau. Mọi ca xác minh KHÔNG đạt thì đã dùng CHUNG `VerifyFailureCell` nên giống hệt nhau ✔.
-
-**G10 · Seam S1/S2 sạch ở cả 4 tầng**
-- Field FE đọc ⊆ field service ghi: `verify/add_status/selected/precheck/message/verified.{code,carrier_name,is_shipped}/existing.*/order_id/tracking_number/carrier/other_carrier` — không field nào FE đọc mà service không bao giờ ghi, và ngược lại không field verify nào service ghi mà UI bỏ qua (trừ N2).
-- Route `/api/tracking/jobs/[id]` (`route.ts:18`) trả `{ job }` = `serializeJob` pass-through, không lọc field → `verified.is_shipped` sống sót tới UI ✔.
-- `/v1/extension/trackings/shipments-result` (`route.ts:21-22`) pass thẳng `ShipmentResultItem[]`, không remap → **không nuốt `is_shipped`** ✔ (đây là chỗ dễ chết nhất của bản sửa này).
-- Hook `useTrackingHistory` gửi `q/shop/page/limit`, route đọc đủ 4 (`app/api/tracking/jobs/route.ts:18-24`) ✔. queryKey `["tracking-history", query]` chứa cả 4 biến filter → không kẹt cache; `["tracking-job", id]` ✔.
-- Type contract dùng CHUNG, không còn bản sao cục bộ ở `page.tsx` (3 chỗ cast đều là `TrackingJobDetail`) ✔.
-
----
-
-## Kết luận
-
-1. **Ca 4171062664 giờ báo lỗi ĐÚNG:** `NOT_SHIPPED` (nếu Etsy ghi đúng "US Standard") hoặc `CARRIER_MISMATCH` (nếu Etsy ghi tên khác) — không còn đường nào ra `VERIFIED`. Chạy trên code thật, không phải suy luận.
-2. Lựa chọn `is_shipped === false` của backend **đúng, không bỏ lọt ca lỗi**, nhưng lý do ghi trong tài liệu đã lỗi thời (N1).
-3. Không có finding CHẶN MERGE. N2 nên sửa trước khi giao cho người vận hành (job COMPLETED vẫn hiện "đang xác minh…").
-4. Rủi ro còn lại là **vận hành, không phải tích hợp**: chưa chứng minh Etsy luôn `isShipped=true` ngay sau add (G1) → cần canary; cờ hạ cấp đã kiểm chứng là sửa 1 dòng (G2).
+| Finding | Mức | Xử lý |
+|---|---|---|
+| F2 `sendMessage(convoId, '', imageIds)` chưa xác nhận Etsy nhận message rỗng | chặn merge | ĐÃ SỬA — `libs/ably.js`: thử gửi tin chỉ-ảnh trước, thất bại thì gửi lại kèm `messageBody` (thà trùng chữ còn hơn mất ảnh). Vẫn cần test tay 1 đơn chưa có hội thoại. |
+| F4 `upload2Etsy` không kiểm `response.ok` → mất ảnh im lặng | nên sửa | ĐÃ SỬA — `libs/etsy-message.js`: throw khi `!ok` hoặc thiếu `image_id`. |
+| F5 UI không chặn >10 ảnh | nên sửa | ĐÃ SỬA — `MessageBuyerDialog.tsx`: `MAX_ATTACHMENTS = 10`, cắt trước khi upload. |
+| F6 file sai MIME bị bỏ im lặng | nên sửa | ĐÃ SỬA — toast báo số ảnh bị bỏ. |
+| F7 `resolveShopUserIdByName` không cache (9 query/lần mở panel) | nên sửa | ĐÃ SỬA — `shop-read.ts`: cache TTL 5 phút theo mẫu `shopNameCache` sẵn có, cache cả kết quả null. |
+| F1 `proxy.ts` chặn nhánh `x-api-key` của `/api/orders/message` | nên sửa | KHÔNG SỬA — lỗi có sẵn từ trước, ngoài phạm vi yêu cầu. Báo user quyết định. |
+| F3 endpoint `extension/order-messages/status/{id}` không tồn tại ở repo nào | nên sửa | KHÔNG SỬA — có sẵn từ trước (luồng gửi tin theo đơn vốn fire-and-forget). Báo user quyết định. |

@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { ExternalLink, Loader2, MessageSquare, Send, X } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { ImageLightbox, MessageBubble } from "@/components/messenger/MessageBubble";
+import { uploadImageFiles } from "@/lib/upload-image";
 import type { MessageItem, OrderListItem } from "@/lib/types/etsy";
 
 interface OrderConversation {
@@ -23,6 +24,13 @@ interface OrderConversation {
 const POLL_TIMES = 8;
 const POLL_INTERVAL_MS = 3000;
 
+/** Trần số ảnh mỗi tin — phải khớp chốt chặn ở app/api/orders/message/route.ts. */
+const MAX_ATTACHMENTS = 10;
+
+/** Poll trạng thái gửi thật (extension báo về) sau khi bấm Gửi — ~15s. */
+const SEND_POLL_TIMES = 10;
+const SEND_POLL_INTERVAL_MS = 1500;
+
 /** Panel nhắn khách theo đơn (trượt từ phải, non-modal) — hiện full hội thoại cũ (nếu có) trước khi gửi. */
 export function MessageBuyerDialog({
   order,
@@ -33,6 +41,9 @@ export function MessageBuyerDialog({
 }) {
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
+  // Ảnh đính kèm = mảng public URL Vercel Blob; extension tự upload2Etsy để đổi thành image_id.
+  const [attachments, setAttachments] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [convo, setConvo] = useState<OrderConversation | null>(null);
   const [loadingConvo, setLoadingConvo] = useState(true);
   // Đang nhờ extension GET thread từ trang đơn (khách guest/chưa trả lời không có trong inbox).
@@ -41,6 +52,14 @@ export function MessageBuyerDialog({
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const openImage = useCallback((src: string) => setLightboxSrc(src), []);
   const threadEndRef = useRef<HTMLDivElement>(null);
+  // Panel đóng giữa lúc đang poll trạng thái gửi → dừng, tránh setState sau unmount.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
   const noShop = !order.shopName.trim();
 
   // Đóng bằng phím Esc (giống OrderSheetSidebar).
@@ -138,8 +157,75 @@ export function MessageBuyerDialog({
     if (convo?.messages.length) threadEndRef.current?.scrollIntoView();
   }, [convo]);
 
+  // Dán ảnh (Ctrl+V) trong ô soạn tin → upload lên Blob rồi đính kèm.
+  // Clipboard không có ảnh thì để trình duyệt dán text như bình thường.
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageFiles = Array.from(e.clipboardData?.items ?? [])
+      .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => f !== null);
+    if (imageFiles.length === 0) return;
+    e.preventDefault();
+
+    // Cắt trước khi upload: route chặn ở 10 ảnh, dán quá thì ảnh thừa vẫn nằm lại
+    // trên Blob vĩnh viễn mà tin lại bị 400.
+    const room = MAX_ATTACHMENTS - attachments.length;
+    if (room <= 0) {
+      toast.error(`Tối đa ${MAX_ATTACHMENTS} ảnh mỗi tin.`);
+      return;
+    }
+    const files = imageFiles.slice(0, room);
+    if (files.length < imageFiles.length) {
+      toast.error(`Chỉ nhận ${MAX_ATTACHMENTS} ảnh mỗi tin — đã bỏ bớt ảnh thừa.`);
+    }
+
+    void (async () => {
+      setUploading(true);
+      try {
+        const urls = await uploadImageFiles(files);
+        if (urls.length === 0) {
+          toast.error("Tải ảnh thất bại: loại file không hợp lệ.");
+          return;
+        }
+        // uploadImageFiles bỏ qua file sai MIME — báo để user biết ảnh nào không lên.
+        if (urls.length < files.length) {
+          toast.error(`Đã bỏ qua ${files.length - urls.length} ảnh không hợp lệ.`);
+        }
+        setAttachments((prev) => [...prev, ...urls]);
+      } catch (err) {
+        toast.error(`Tải ảnh thất bại: ${err instanceof Error ? err.message : "Lỗi mạng"}`);
+      } finally {
+        setUploading(false);
+      }
+    })();
+  };
+
+  const removeAttachment = (url: string) =>
+    setAttachments((prev) => prev.filter((u) => u !== url));
+
+  /** Poll trạng thái tới khi extension chốt DONE/FAILED; null nếu hết giờ. */
+  const waitSendResult = async (
+    id: string,
+  ): Promise<{ status: string; error: string } | null> => {
+    for (let i = 0; i < SEND_POLL_TIMES; i++) {
+      await new Promise((r) => setTimeout(r, SEND_POLL_INTERVAL_MS));
+      if (!aliveRef.current) return null;
+      try {
+        const r = await fetch(`/api/orders/message/status/${id}`);
+        if (!r.ok) continue;
+        const d = (await r.json()) as { status?: string; error?: string };
+        if (d.status === "DONE" || d.status === "FAILED") {
+          return { status: d.status, error: d.error ?? "" };
+        }
+      } catch {
+        /* mạng chập chờn — thử tiếp */
+      }
+    }
+    return null;
+  };
+
   const send = async () => {
-    if (!message.trim() || noShop) return;
+    if (!message.trim() || noShop || uploading) return;
     setSending(true);
     try {
       const res = await fetch("/api/orders/message", {
@@ -149,9 +235,10 @@ export function MessageBuyerDialog({
           shopName: order.shopName,
           orderId: order.orderId,
           message: message.trim(),
+          attachments,
         }),
       });
-      const data = (await res.json()) as { error?: string; code?: string };
+      const data = (await res.json()) as { error?: string; code?: string; id?: string };
       if (!res.ok) {
         toast.error(
           data.code === "shop_offline"
@@ -160,11 +247,28 @@ export function MessageBuyerDialog({
         );
         return;
       }
+
+      // Publish Ably xong KHÔNG có nghĩa Etsy đã nhận: ảnh có thể upload lỗi, Etsy có
+      // thể từ chối. Chờ extension báo trạng thái thật rồi mới kết luận.
+      const sent = data.id ? await waitSendResult(data.id) : null;
+      if (!aliveRef.current) return;
+
+      if (sent?.status === "FAILED") {
+        // Giữ nguyên nội dung + ảnh để gửi lại, không đóng panel.
+        toast.error(`Gửi thất bại: ${sent.error || "extension báo lỗi"}`);
+        return;
+      }
+      if (!sent || sent.status !== "DONE") {
+        toast.error("Đã gửi yêu cầu nhưng chưa nhận được xác nhận từ extension — kiểm tra lại trên Etsy.");
+        return;
+      }
+
       toast.success(
         convo?.conversationId
           ? "Đã gửi vào hội thoại hiện có."
-          : "Đã gửi yêu cầu nhắn khách. Hội thoại sẽ xuất hiện sau khi sync.",
+          : "Đã gửi cho khách. Hội thoại sẽ xuất hiện sau khi sync.",
       );
+      setAttachments([]);
       onClose();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Lỗi mạng");
@@ -257,13 +361,49 @@ export function MessageBuyerDialog({
           </p>
         )}
 
+        {/* Preview ảnh đã dán (Ctrl+V) */}
+        {(attachments.length > 0 || uploading) && (
+          <div className="mb-2 flex shrink-0 flex-wrap gap-2">
+            {attachments.map((url) => (
+              <div key={url} className="relative h-16 w-16">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={url}
+                  alt=""
+                  className="h-16 w-16 rounded-lg border border-border object-cover"
+                />
+                <button
+                  onClick={() => removeAttachment(url)}
+                  aria-label="Xoá ảnh"
+                  className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-foreground text-white hover:bg-black"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+            {uploading && (
+              <div className="flex h-16 w-16 items-center justify-center rounded-lg border border-dashed border-input-strong text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+              </div>
+            )}
+          </div>
+        )}
+
         <textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
+          onPaste={onPaste}
           rows={3}
-          placeholder="Nội dung tin nhắn gửi khách…"
+          placeholder="Nội dung tin nhắn gửi khách… (Ctrl+V để dán ảnh)"
           className="w-full shrink-0 resize-y rounded-xl border-0 bg-secondary px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         />
+
+        {/* Đơn chưa có hội thoại thì extension cần text để tạo hội thoại → ảnh trần không gửi được. */}
+        {attachments.length > 0 && !message.trim() && (
+          <p className="mt-2 shrink-0 text-xs text-warning">
+            Ảnh phải gửi kèm nội dung tin nhắn.
+          </p>
+        )}
 
         <div className="mt-3 flex shrink-0 justify-end gap-2">
           <button
@@ -274,7 +414,7 @@ export function MessageBuyerDialog({
           </button>
           <button
             onClick={send}
-            disabled={sending || !message.trim() || noShop}
+            disabled={sending || uploading || !message.trim() || noShop}
             className="flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/90 disabled:bg-input-strong"
           >
             {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
