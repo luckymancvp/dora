@@ -1,6 +1,6 @@
 import type { Collection, Db } from "mongodb";
 import clientPromise from "@/lib/mongodb-client";
-import type { AiSuggestionEventDoc, AutoReplyDoc, ConversationDoc, EtsyOrderDoc, MessageDoc, MessageTemplateDoc, OrderConversationDoc, OrderTrackingDoc, PersonalizationFileDoc, ReplyExampleDoc } from "@/lib/types/etsy";
+import type { AiSuggestionEventDoc, AutoReplyDoc, ConversationDoc, EtsyOrderDoc, MessageDoc, MessageTemplateDoc, OrderConversationDoc, OrderMessageDoc, OrderTrackingDoc, PersonalizationFileDoc, ReplyExampleDoc } from "@/lib/types/etsy";
 import type { SheetConfigDoc, SheetRowDoc } from "@/lib/types/sheets";
 import type { OrderStatusDoc } from "@/lib/types/order-status";
 import type { TrackingJob } from "@/lib/types/tracking";
@@ -103,6 +103,12 @@ export async function getReplyExamplesCollection(): Promise<Collection<ReplyExam
 export async function getAiSuggestionEventsCollection(): Promise<Collection<AiSuggestionEventDoc>> {
   const db = await getDb();
   return db.collection<AiSuggestionEventDoc>("ai_suggestion_events");
+}
+
+/** Collection `order_messages` — trạng thái từng lần nhắn khách theo đơn (trang Orders). */
+export async function getOrderMessagesCollection(): Promise<Collection<OrderMessageDoc>> {
+  const db = await getDb();
+  return db.collection<OrderMessageDoc>("order_messages");
 }
 
 export async function getTrackingJobsCollection(): Promise<Collection<TrackingJob>> {
