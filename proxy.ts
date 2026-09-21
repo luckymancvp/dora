@@ -22,11 +22,21 @@ export default auth((req) => {
   )
     return NextResponse.next();
 
-  // /api/orders/message: Apps Script gọi bằng x-api-key, KHÔNG có session cookie —
-  // trước đây middleware đẩy về /login nên nhánh x-api-key trong route là code chết.
+  // Các route máy-gọi-máy (Apps Script, Mera): gọi bằng x-api-key, KHÔNG có session
+  // cookie — trước đây middleware đẩy về /login nên nhánh x-api-key trong route là
+  // CODE CHẾT. Thêm route mới vào đây là bắt buộc, không thì nhánh x-api-key của nó
+  // cũng chết y như vậy và triệu chứng là một cú redirect chứ không phải một lỗi.
+  //
   // Chỉ cho qua request thực sự MANG header; route tự so key với MERA_INTERNAL_API_KEY
   // rồi mới xử lý, không mang header thì vẫn bị chặn như cũ.
-  if (pathname === "/api/orders/message" && req.headers.get("x-api-key")) {
+  //   /api/orders/message           — gửi tin (đã có từ trước)
+  //   /api/orders/message/status/:id — đọc kết quả gửi của CHÍNH tin vừa gửi
+  //   /api/orders/conversation       — tra hội thoại của một đơn
+  const machineRoute =
+    pathname === "/api/orders/message" ||
+    pathname === "/api/orders/conversation" ||
+    pathname.startsWith("/api/orders/message/status/");
+  if (machineRoute && req.headers.get("x-api-key")) {
     return NextResponse.next();
   }
 
