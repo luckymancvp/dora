@@ -1,7 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { createJob, listJobHistory, ShopOfflineError } from "@/lib/services/tracking";
+import { listCarrierRules } from "@/lib/services/carrier-rule";
 import type { TrackingOrderInput } from "@/lib/types/tracking";
+import { evaluateCarrierRules } from "@/lib/types/carrier-rule";
 
 // GET /api/tracking/jobs?q=&shop=&page=&limit=
 // Lịch sử add tracking, phân trang. Trả TrackingHistoryResponse PHẲNG
@@ -51,12 +53,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "shopName bắt buộc" }, { status: 400 });
     }
 
+    // Dòng dán tay không có carrier → suy từ số tracking theo quy tắc ở tab Cấu hình import,
+    // giống luồng Import CSV (checkImportRows). Không suy được thì để trống như cũ.
+    const carrierRules = await listCarrierRules();
     const orders = (Array.isArray(body.orders) ? body.orders : [])
-      .map((o) => ({
-        order_id: String(o.order_id ?? "").trim(),
-        tracking_number: String(o.tracking_number ?? "").trim(),
-        carrier: String(o.carrier ?? "").trim(),
-      }))
+      .map((o) => {
+        const tracking_number = String(o.tracking_number ?? "").trim();
+        const carrier =
+          String(o.carrier ?? "").trim() ||
+          evaluateCarrierRules(tracking_number, carrierRules)?.carrier ||
+          "";
+        return { order_id: String(o.order_id ?? "").trim(), tracking_number, carrier };
+      })
       .filter((o) => o.order_id && o.tracking_number);
 
     if (orders.length === 0) {
