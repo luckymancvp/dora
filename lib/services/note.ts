@@ -106,9 +106,23 @@ export async function editNote(
   );
   if (res.matchedCount === 0) throw new NoteError(404, "note not found or not owner");
 
+  // Đọc lại đúng note vừa sửa để trả createdAt THẬT (trước đây trả createdAt = now,
+  // làm UI thấy note "mới tạo" sau mỗi lần sửa cho tới khi refetch).
+  const doc = (await coll.findOne(
+    { "etsy.conversation_id": conversationId, "notes.id": noteId },
+    { projection: { "notes.$": 1 } },
+  )) as WithId<ConversationDoc> | null;
+  const saved = Array.isArray(doc?.notes) ? doc!.notes[0] : undefined;
+
   const users = await getUsersByEmail([email]);
   return mapNote(
-    { id: noteId, authorEmail: email, body: text, createdAt: now, updatedAt: now },
+    {
+      id: noteId,
+      authorEmail: email,
+      body: text,
+      createdAt: saved?.createdAt ?? now,
+      updatedAt: now,
+    },
     email,
     users,
   );

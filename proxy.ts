@@ -32,10 +32,13 @@ export default auth((req) => {
   //   /api/orders/message           — gửi tin (đã có từ trước)
   //   /api/orders/message/status/:id — đọc kết quả gửi của CHÍNH tin vừa gửi
   //   /api/orders/conversation       — tra hội thoại của một đơn
+  //   /api/machine/*                 — route CHỈ-máy cho Mera fulfill (reply hội thoại,
+  //                                    gắn/gỡ tag, status tin); không có nhánh session
   const machineRoute =
     pathname === "/api/orders/message" ||
     pathname === "/api/orders/conversation" ||
-    pathname.startsWith("/api/orders/message/status/");
+    pathname.startsWith("/api/orders/message/status/") ||
+    pathname.startsWith("/api/machine/");
   if (machineRoute && req.headers.get("x-api-key")) {
     return NextResponse.next();
   }
