@@ -48,6 +48,19 @@ export default function OrdersPage() {
 
   const { data, isLoading, isFetching, refetch } = useOrders(filters);
 
+  // Deep link từ Mera Fulfill (Ctrl+click icon tin nhắn khi order chưa có hội thoại):
+  //   /orders?search=<order id>&message=1
+  // ⇒ điền sẵn ô tìm; `message=1` + đúng 1 đơn khớp ⇒ mở luôn khung "Nhắn khách".
+  // Đọc window.location (không dùng useSearchParams để khỏi cần Suspense boundary khi build).
+  const [autoMessage, setAutoMessage] = useState(false);
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const q = (sp.get("search") ?? "").trim();
+    if (!q) return;
+    setFilters((f) => ({ ...f, search: q, page: 1 }));
+    if (sp.get("message") === "1") setAutoMessage(true);
+  }, []);
+
   // Đổi search/shop/tab → reset về trang 1.
   const patch = (p: Partial<Filters>) =>
     setFilters((f) => ({ ...f, ...p, page: "page" in p ? (p.page as number) : 1 }));
@@ -68,6 +81,22 @@ export default function OrdersPage() {
     if ((data.tabCounts[other] ?? 0) > 0) patch({ tab: other });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.search, filters.tab, data, isLoading, isFetching, items.length]);
+
+  // Mở "Nhắn khách" một lần khi deep link có message=1 và kết quả đã về đúng 1 đơn.
+  useEffect(() => {
+    if (!autoMessage || isLoading || isFetching || !data) return;
+    if (items.length === 1) {
+      setUpdateOrder(null);
+      setMessageOrder(items[0]);
+      setAutoMessage(false);
+    } else if (items.length > 1) {
+      setAutoMessage(false); // nhiều đơn khớp ⇒ để người dùng tự chọn
+    }
+    else if (Object.values(data.tabCounts).every((n) => !n)) {
+      setAutoMessage(false); // không đơn nào khớp ở cả 2 tab
+    }
+    // Còn lại (tab này 0, tab kia có): chờ effect tự chuyển tab ở trên rồi thử lại.
+  }, [autoMessage, data, isLoading, isFetching, items]);
 
   return (
     <div className="h-full overflow-y-auto">
