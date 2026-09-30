@@ -6,6 +6,7 @@ import type { OrderStatusDoc } from "@/lib/types/order-status";
 import type { TrackingJob } from "@/lib/types/tracking";
 import type { TrackingImportProfileDoc } from "@/lib/types/tracking-import";
 import type { CarrierRuleSetDoc } from "@/lib/types/carrier-rule";
+import type { UserPreferencesDoc } from "@/lib/types/user-preferences";
 import { ensureIndexes, ensureStoresIndexes } from "@/lib/db/indexes";
 
 // Lazy ensure index một lần cho mỗi process (cache global cho dev hot-reload).
@@ -135,6 +136,12 @@ export async function getTrackingImportProfilesCollection(): Promise<
 export async function getCarrierRulesCollection(): Promise<Collection<CarrierRuleSetDoc>> {
   const db = await getDb();
   return db.collection<CarrierRuleSetDoc>("carrier_rules");
+}
+
+/** Collection `user_preferences` — tuỳ chọn riêng từng người dùng (1 doc / email), vd tag ghim. */
+export async function getUserPreferencesCollection(): Promise<Collection<UserPreferencesDoc>> {
+  const db = await getDb();
+  return db.collection<UserPreferencesDoc>("user_preferences");
 }
 
 /** Collection shop của dora (DB khác: dora-master). Dùng để lấy Etsy shop_id thật. */

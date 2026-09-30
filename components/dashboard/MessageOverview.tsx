@@ -1,17 +1,19 @@
 "use client";
 
 import { useMemo } from "react";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Loader2 } from "lucide-react";
 import { useMessageOverview } from "@/lib/hooks/useAnalytics";
-import type { AnalyticsFilters } from "@/lib/types/etsy";
+import type { AnalyticsFilters, CompletedScope } from "@/lib/types/etsy";
 import { PanelCard, StatCard } from "./PanelCard";
 import { useOpenMultiple } from "./useOpenMultiple";
+import { completedScopeKey, useOpenCompleted } from "./useOpenCompleted";
 import { AllClearCelebration } from "./AllClearCelebration";
 import { RiveIcon } from "@/components/RiveIcon";
 
 export function MessageOverview({ filters }: { filters: AnalyticsFilters }) {
   const { data, isPending, isError } = useMessageOverview(filters);
   const openMultiple = useOpenMultiple();
+  const { openCompleted, pendingKey } = useOpenCompleted(filters);
 
   const totals = data?.totals ?? { total: 0, unread: 0, completed: 0 };
   // Sắp xếp shop theo số tin chưa trả lời (lớn → nhỏ).
@@ -93,50 +95,71 @@ export function MessageOverview({ filters }: { filters: AnalyticsFilters }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-secondary">
-              {shops.map((s) => (
-                <tr key={s.shopId}>
-                  <td className="py-2.5 pr-3">
-                    <span className="flex items-center gap-2">
+              {shops.map((s) => {
+                const scope: CompletedScope = { kind: "shop", shopId: s.shopId };
+                const completedPending = pendingKey === completedScopeKey(scope);
+                return (
+                  <tr key={s.shopId}>
+                    <td className="py-2.5 pr-3">
+                      <span className="flex items-center gap-2">
+                        <span
+                          className={`h-2 w-2 shrink-0 rounded-full ${s.online ? "bg-success" : "bg-warning"}`}
+                        />
+                        <span className="truncate font-bold text-foreground">{s.shopName}</span>
+                      </span>
+                    </td>
+                    <td className="px-2 py-2.5 text-center font-bold text-foreground">{s.total}</td>
+                    <td className="px-2 py-2.5 text-center">
                       <span
-                        className={`h-2 w-2 shrink-0 rounded-full ${s.online ? "bg-success" : "bg-warning"}`}
-                      />
-                      <span className="truncate font-bold text-foreground">{s.shopName}</span>
-                    </span>
-                  </td>
-                  <td className="px-2 py-2.5 text-center font-bold text-foreground">{s.total}</td>
-                  <td className="px-2 py-2.5 text-center">
-                    <span
-                      className={`inline-flex min-w-6 justify-center rounded-full px-2 py-0.5 text-xs font-bold ${
-                        s.unread > 0
-                          ? "bg-destructive-soft text-destructive"
-                          : "bg-success-soft text-success"
-                      }`}
-                    >
-                      {s.unread}
-                    </span>
-                  </td>
-                  <td className="px-2 py-2.5 text-center font-bold text-success">
-                    {s.completed}
-                  </td>
-                  <td className="py-2.5 pl-2 text-right">
-                    {s.unreadConversations.length > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          openMultiple(
-                            s.unreadConversations.map((c) => ({ ...c, shop: s.shopName })),
-                          )
-                        }
-                        className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-xs font-bold text-primary transition-colors hover:bg-accent"
+                        className={`inline-flex min-w-6 justify-center rounded-full px-2 py-0.5 text-xs font-bold ${
+                          s.unread > 0
+                            ? "bg-destructive-soft text-destructive"
+                            : "bg-success-soft text-success"
+                        }`}
                       >
-                        Mở {s.unreadConversations.length}
-                      </button>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                        {s.unread}
+                      </span>
+                    </td>
+                    <td className="px-2 py-2.5 text-center">
+                      {s.completed > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => void openCompleted(scope, s.shopName)}
+                          disabled={completedPending}
+                          title="Mở tin đã xong"
+                          className="inline-flex min-w-6 items-center justify-center gap-1 rounded-full bg-success-soft px-2 py-0.5 text-xs font-bold text-success transition-shadow hover:ring-1 hover:ring-success disabled:cursor-wait disabled:opacity-70"
+                        >
+                          {completedPending ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <ExternalLink className="h-3 w-3" />
+                          )}
+                          {s.completed}
+                        </button>
+                      ) : (
+                        <span className="text-xs font-bold text-muted-foreground">0</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 pl-2 text-right">
+                      {s.unreadConversations.length > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openMultiple(
+                              s.unreadConversations.map((c) => ({ ...c, shop: s.shopName })),
+                            )
+                          }
+                          className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-xs font-bold text-primary transition-colors hover:bg-accent"
+                        >
+                          Mở {s.unreadConversations.length}
+                        </button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}

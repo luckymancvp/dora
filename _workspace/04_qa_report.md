@@ -1,150 +1,69 @@
-# 04 — QA tích hợp: "Dán ảnh vào panel Nhắn khách" (Orders)
+# 04 — QA tích hợp: Ghim tag + cột/nút "Đã xong" (Dashboard)
 
-Ngày: 2026-09-17 · Đầu vào: `01_architect_contract.md` (S1–S8), `02_backend_changes.md`, `03_frontend_changes.md`
-Phạm vi kiểm: dora-1 + ranh giới ngoài repo (`D:\Pamo\DORA\dora-extension`) + hồi quy `order-conversation*` / `shop-read`.
+Ngày: 2026-09-30 · Đầu vào: `01_architect_contract.md` (S1–S10), `02_backend_changes.md`, `03_frontend_changes.md`.
+Phương pháp: skill `dora-integration-qa` — so khớp 4 tầng service → route → hook → component, kiểm bằng thực thi.
 
-## 0. Kiểm chứng bằng thực thi
+## Kết luận
 
-| Lệnh | Kết quả |
-|------|---------|
-| `npx tsc --noEmit` | **exit 0**, 0 lỗi |
-| `npx next build` | **✓ Compiled successfully in 8.0s**, 0 error/warning |
-| `next dev -p 3098` + curl 7 case vào chính handler `POST /api/orders/message` | xem bảng dưới |
+**Không có finding chặn merge. Không sửa code.** 0 "nên sửa", 9 "lưu ý" (edge case / rủi ro đã chấp nhận).
 
-⚠️ `next.config.mjs:3-5` đặt `typescript: { ignoreBuildErrors: true }` → **`next build` KHÔNG typecheck**. Chỉ `tsc --noEmit` mới là bằng chứng về type. Đã chạy cả hai.
+| Kiểm | Kết quả |
+|---|---|
+| `npx tsc --noEmit` | exit 0 |
+| `npm run build` (Next 16.2.6) | exit 0 — có route `ƒ /api/analytics/completed-conversations`, `ƒ /api/me/pinned-tags`. Lưu ý: `next.config` có `typescript.ignoreBuildErrors: true` nên build KHÔNG typecheck, tsc ở trên mới là cổng kiểm type. Dev server :3000 đang chạy, build dùng `.next/` còn dev dùng `.next/dev/` nên không đè nhau. |
+| eslint | không chạy được: repo không có `eslint.config.*` (ESLint 10) — có từ trước, không liên quan tính năng này |
+| Round-trip param (thực thi) | transpile `lib/hooks/useAnalytics.ts` + `lib/services/analytics-params.ts`, mock `fetch`: 12/12 tổ hợp (2 filters × 6 scope, gồm tag có `& = ? # %`, tag có khoảng trắng đầu/cuối, `shopId=0`, shopId 11 chữ số) → URL hook tạo ra được `parseCompletedScope` + `parseAnalyticsParams` parse lại đúng y hệt. 9 ca 400 trả đúng thông báo. |
+| Optimistic ghim (thực thi) | mô phỏng 2 `MutationObserver` TanStack v5 thật, cùng callbacks: optimistic `["x","__untagged__"]`; `onSettled` thấy `isMutating` = 2 rồi 1 → chỉ invalidate 1 lần ở lần cuối; server giữ cả 2 tag. |
+| Gọi endpoint (dev server, không cookie) | cả 3 route → `307 /login` (proxy chặn trước route) — giống hệt `tags-overview` có sẵn. Không có session nên không kiểm được shape JSON thật; không chạy query trên DB. |
 
-### Kết quả curl (chạy thật, không phải suy luận)
+## So khớp 4 tầng theo seam
 
-`/api/orders/message` bị middleware chặn (xem F1), nên đã dựng alias tạm `app/v1/qatmpqa/route.ts` re-export đúng handler đó (đường `/v1/*` được miễn auth), chạy xong **đã xoá** (`git status` sạch).
+| Seam | Service (1) | Route (2) | Hook (3) | Component (4) | KQ |
+|---|---|---|---|---|---|
+| S1 | `analytics.ts:483,495` `completed: Math.max(total-unread,0)` cả dòng tag lẫn No Tag | tags-overview không đổi | `useTagsOverview` key `["analytics","tags",filters]` → `TagsOverviewResponse` (type chung `lib/types/etsy.ts:716`) | `TagsOverview.tsx:139,152` đọc `t.completed`, không tự tính | OK |
+| S2 | `ShopOverviewRow.completed` có sẵn (`analytics.ts:230,252`) | overview không đổi | key `["analytics","overview",filters]` | `MessageOverview.tsx:124,137` `s.completed` | OK |
+| S3 | `getCompletedConversations` trả `{items,total,truncated}` đúng `CompletedConversationsResponse` | route đọc scope qua `parseCompletedScope`, from/to/shopIds qua `parseAnalyticsParams`; 400/401/500 đúng §2.1 | `fetchCompletedConversations` cast `CompletedConversationsResponse` (import từ `lib/types`, không nhân bản); key `["analytics","completed",filters,scope]` — có đủ filters + scope | `useOpenCompleted.ts:45-52` đọc `data.items/total/truncated` | OK |
+| S4 | xem §S4 bên dưới | — | — | — | OK |
+| S5 | `shop` = getShops → `Shop <id>` (id>0) → bỏ field | — | — | shop: ghi đè `shopName` (`MessageOverview.tsx:127`, `useOpenCompleted.ts:44-45`); tag: giữ `shop` từ API (`TagsOverview.tsx:142` không truyền shopName) | OK |
+| S6 | `CompletedScope` 3 kind | `tag` / `untagged` / `shopId`, đúng 1 | set đúng 1 key (`useAnalytics.ts` F1) | `TagsOverview.tsx:24-26` untagged → `{kind:"untagged"}` (không gửi `tag=No Tag`); `MessageOverview.tsx:99` shopId=0 hợp lệ | OK (đã chạy round-trip) |
+| S7 | `getPinnedTags` → `string[]`, đọc phòng thủ | GET → `{ pinnedTags }` | `usePinnedTags` key `["me","pinned-tags"]`, `PinnedTagsResponse` | `TagsOverview.tsx:37` `data?.pinnedTags` | OK |
+| S8 | `$addToSet` (upsert) / `$pull` (không upsert), không trim, `meta_local.user_preferences` (`collections.ts` dùng `getDb()`), index `uq_email` | PATCH body `{tag,pinned}` → `{ pinnedTags }`, `PreferenceError` → 400 | mutationKey `["me","pinned-tags"]`, body `PinTagBody` | khoá `t.untagged ? UNTAGGED_PIN_KEY : t.tag` (`TagsOverview.tsx:20-22,108`) — không dùng `tagLabel` | OK |
+| S9 | — | — | — | `TagsOverview.tsx:43-52` ghim trước, trong nhóm `unread` desc; chỉ sort `data.tags` nên tag ghim vắng mặt không sinh dòng | OK |
+| S10 | — | cả 3 route có nhánh 401 `{error:"unauthenticated"}` | — | — | OK (xem L5) |
 
-| # | Input | HTTP | Body |
-|---|-------|------|------|
-| T1 | `message:"   "` + 1 ảnh | **400** | `{"error":"shopName, orderId và message bắt buộc"}` → **S5 invariant ĐÚNG** |
-| T2 | 11 URL hợp lệ | **400** | `{"error":"Tối đa 10 ảnh mỗi tin"}` → **S8 chốt chặn ĐÚNG** |
-| T3 | `attachments:"https://a.jpg"` (string) | 409 | không 400 → tương thích caller cũ ĐÚNG |
-| T4 | `["blob:…","data:…",123,null,"https://a/1.jpg"]` | 409 | rác bị lọc, không 400 |
-| T5 | đúng 10 URL | 409 | qua được ngưỡng |
-| T6 | không có `attachments` | 409 | caller cũ Apps Script ĐÚNG |
-| T7 | `x-api-key: WRONG` | 401 | chặn ĐÚNG |
+queryKey mới không đụng key cũ: `["analytics","completed",…]` khác mọi key analytics hiện có; không có chỗ nào `invalidateQueries` theo tiền tố `["analytics"]`; `["me",…]` là key duy nhất bắt đầu bằng `"me"`.
 
-(409 = `shop_offline`, dùng shop giả `__qa_no_such_shop__` nên không có tin nào thật sự được gửi đi.)
+### S4 — số trên nút == số mở ra
 
-## 1. Finding — CHẶN MERGE
+**Phần bù.** `UNREAD_EXPR` (`analytics.ts:78-88`) = `$eq(has_replied,false)` AND `|ifNull(tags,[]) ∩ HANDLED| = 0`. Phủ định theo De Morgan = `has_replied ≠ false` OR `tags ∩ HANDLED ≠ ∅` = `COMPLETED_MATCH` (`analytics.ts:96-98`). Kiểm từng trường hợp:
 
-Không có finding nào **trong phần code của 2 agent** ở mức chặn merge. Hai mục dưới nằm ở phía extension / middleware và cần quyết định trước khi bật tính năng cho user.
+| has_replied | tags | UNREAD_EXPR | COMPLETED_MATCH |
+|---|---|---|---|
+| false | thiếu / null / [] / ["x"] | 1 | không khớp (`$ne:false` sai, `$in` sai) |
+| false | ["handled"] / ["approved","x"] | 0 | khớp (`$in`) |
+| true / null / thiếu / thiếu cả `etsy` | bất kỳ | 0 (`$eq` với missing/null ≠ false) | khớp (`$ne:false` khớp missing/null) |
+| 0 (số) | bất kỳ không handled | 0 (khác kiểu BSON) | khớp (so sánh query cũng phân biệt kiểu) |
 
-### F1 — `x-api-key` của `/api/orders/message` là code chết (middleware chặn trước)
+→ Phần bù chính xác.
 
-- **Seam:** S1 (UI/máy → route) · **Tầng lệch:** 2 (route) vs middleware
-- **Bằng chứng:**
-  - `proxy.ts:16-23` — danh sách miễn auth chỉ có `/api/auth`, `/api/health`, `/api/uploads`, `/api/cron`, `/v1/`. **Không có `/api/orders/message`.**
-  - `app/api/orders/message/route.ts:11-18` — nhánh `viaApiKey` chỉ chạy sau khi middleware cho qua.
-  - Thực nghiệm: `POST /api/orders/message` kèm `x-api-key` ĐÚNG → **`HTTP/1.1 307` + `location: /login`**, chưa từng chạm route.
-- **Mức độ:** **nên sửa (không do feature này gây ra — tiền sử, `proxy.ts` không nằm trong diff)**. Nhưng nó **vô hiệu hoá toàn bộ mục "tương thích caller Apps Script"** ở `02_backend_changes.md` và khiến 6/6 lệnh curl trong báo cáo đó không chạy được như mô tả.
-- **Cách sửa:** thêm vào `proxy.ts:16-22` nhánh cho request mang header `x-api-key` (route đã tự verify key), hoặc tối thiểu `pathname === "/api/orders/message"`. Không nên mở cả `/api/*`.
+**Match theo scope trùng match đếm** (cùng `buildBaseMatch(opts)`, cùng `parseAnalyticsParams`, frontend dùng cùng `filters` object ở `app/page.tsx:24-27` cho cả count và list → from/to/shopIds giống nhau):
+- tag: `{ tags: tag }` ⇔ `$unwind:"$tags"` + group theo phần tử (`analytics.ts:427-441`). Khớp (trừ tag lặp, contract đã chấp nhận).
+- untagged: dùng chung const `UNTAGGED_MATCH` cho đếm (`analytics.ts:445`) và list. Khớp.
+- shop>0: `{ "user_data.user_id": id }` ⇔ group `_id` + `isValidShopId`. Khớp.
+- shop=0: `{ $not: { $gt: 0 } }` ⇔ gộp mọi nhóm `!isValidShopId` (thiếu/null/0/âm/chuỗi/NaN). `$gt:0` chỉ khớp kiểu số nên chuỗi `"123"` rơi vào dòng 0 ở cả hai phía. Kết hợp `shopIds` (luôn dương) → tập rỗng ở cả hai phía. Khớp.
 
-### F2 — Extension gửi tin ảnh với `message` RỖNG ở nhánh đơn chưa có hội thoại
+## Finding
 
-- **Seam:** S5 · **Tầng lệch:** extension
-- **Bằng chứng:** `D:\Pamo\DORA\dora-extension\libs\ably.js:454-463` — sau `createOrderConvoMessage` (tin text), ảnh đi ở tin thứ hai:
-  `await sendMessage(finalConvoId, '', imageIds);`
-- Luồng Messenger đang chạy tốt (`ably.js:568`) **luôn có text** (`data.message.message`), nên chưa có bằng chứng Etsy chấp nhận `message: ""` ở `POST /api/v3/ajax/member/conversations/{id}`.
-- **Mức độ:** **chặn merge nếu chưa test tay 1 đơn chưa-có-hội-thoại**. Đây là nhánh DUY NHẤT chưa từng chạy trong production.
-- **Cách sửa (nếu Etsy từ chối):** truyền lại `messageBody` hoặc một chuỗi tối thiểu thay cho `''`.
+| # | Mức | Seam / tầng | Bằng chứng | Mô tả | Gợi ý | Đã sửa |
+|---|---|---|---|---|---|---|
+| L1 | lưu ý | S3 / 4 | `components/dashboard/useOpenCompleted.ts:38-50` → `useOpenMultiple.ts:29` | `window.open` chạy sau `await fetchQuery`. Chrome/Firefox cho ~5s transient activation (truy vấn limit 500 + index, dự kiến < 1s; cache 8s thì trả ngay). Safari chặt hơn, có thể chặn. Nếu bị chặn thì **im lặng**: danh sách đã stage vào localStorage nhưng không mở tab, không có toast. Contract D7 đã chấp nhận. | Nếu cần sau này: `useOpenMultiple` trả kết quả `window.open` (null → toast "Trình duyệt chặn popup"). Ngoài contract, không làm. | Không |
+| L2 | lưu ý | S6/S8 / 2 | `lib/services/analytics-params.ts:44-47`, `lib/services/user-preferences.ts:42-47` | Tag thật trong DB dài > 100 ký tự hoặc toàn khoảng trắng → nút "Đã xong" trả 400 (toast "Không tải được…") và ghim trả 400 (toast "Không lưu được tag ghim"). Route machine giới hạn tag 50 ký tự (`app/api/machine/conversations/[conversation_id]/tags/route.ts:11`); đường ghi tag khác chưa thấy giới hạn. Xác suất thấp. | Để nguyên theo contract; nếu gặp thì nâng trần. | Không |
+| L3 | lưu ý | S4 / 1 | `analytics.ts:427-441` so với `scopeMatch` | Edge contract đã chấp nhận: tag lặp `["a","a"]` được đếm 2 lần nhưng list chỉ có 1; `tags: null` không thuộc dòng nào. Thêm: phần tử tag không phải string (vd số 5) → `t.tag` là number, frontend gửi `"5"`, `{tags:"5"}` không khớp → list 0 trong khi nút hiện > 0. Cần dữ liệu bẩn mới xảy ra. | Không cần xử lý. | Không |
+| L4 | lưu ý | S5 / 1 | `analytics.ts:465` (`c.shopUserId ?`) và `getCompletedConversations` (`c.shopUserId > 0 ?`) | Với `user_id` âm: item unread ở bảng tag có `shop: "Shop -5"`, item đã xong thì không có `shop`. Chỉ lệch hiển thị, contract (§2.1) yêu cầu đúng cách hiện tại. | Không cần. | Không |
+| L5 | lưu ý | S10 / 2 | `proxy.ts` (redirect khi `!isLoggedIn`); curl → `307 /login` | Nhánh 401 trong 3 route không tới được từ trình duyệt vì proxy redirect trước. `fetch` đi theo redirect → HTML 200 → `res.json()` ném lỗi → toast lỗi. Giống mọi route `/api/*` có từ trước. | Không cần. | Không |
+| L6 | lưu ý | S8 / 3 | `lib/hooks/usePinnedTags.ts:55-57` | A lỗi khi B đang chạy → rollback về snapshot của A (trước B) nên optimistic của B mất tạm thời, tự khôi phục khi B settle và invalidate. Đây là pattern chuẩn của TanStack. | Không cần. | Không |
+| L7 | lưu ý | S8 / 1 | `user-preferences.ts:57,73` | Bấm ghim rồi bỏ ghim **cùng 1 tag** rất nhanh: `$addToSet`/`$pull` không giao hoán khi cùng tag; nếu 2 request tới server sai thứ tự thì sau lần invalidate cuối UI sẽ đổi lại đúng trạng thái trên server (có thể khác ý người dùng). Với 2 tag khác nhau thì không lỗi (đã chạy mô phỏng). | Không cần. | Không |
+| L8 | lưu ý | S3 / 4 | `useOpenCompleted.ts:34-36,57-60` | Bấm 2 scope khác nhau liên tiếp: cả 2 đều mở, cùng cửa sổ `dora-open-multiple`, request nào về sau thì danh sách đó thắng; spinner chỉ hiện ở scope bấm sau. Frontend đã ghi nhận. | Không cần. | Không |
+| L9 | lưu ý | phạm vi | `git status` | Ngoài contract chỉ có artifact sinh tự động: `tsconfig.tsbuildinfo` (M). `next-env.d.ts` lúc bắt đầu là M, sau khi tôi chạy `npm run build` thì Next ghi lại bản giống bản đã commit nên không còn trong diff. Thư mục chưa track `_workspace_prev_20260917_orders-image/` là bản lưu harness trước, không phải code. Không có file code nào ngoài contract bị đổi. | Không commit `tsconfig.tsbuildinfo` hay `_workspace_prev_*` cùng tính năng. | Không |
 
-## 2. Finding — NÊN SỬA
-
-### F3 — Trạng thái gửi rơi vào hư không: `extension/order-messages/status/{id}` không tồn tại ở đâu cả
-
-- **Seam:** S2/S3 (vòng phản hồi sau publish) · **Tầng lệch:** extension ↔ backend
-- **Bằng chứng:**
-  - Gọi: `ably.js:466-471` (`status: 'DONE'`) và `ably.js:483-488` (`status: 'FAILED'`) qua `callBackend` → base `env.BACKEND_ENDPOINT` (Go backend).
-  - Go backend `dora-backend\modules\extension\routes.go:11-14` chỉ có `messages/status/:id` và `trackings/status/:id`. `grep -rn "order-messages" --include=*.go` → **0 hit**.
-  - dora-1 cũng không có: `app/v1/**` chỉ có `messages/status/[id]`, `trackings/status/[id]`.
-  - `libs/backend-api.js:8-37` — `callBackend` nuốt lỗi (`catch → return null`) nên 404 không gây FAILED giả, nhưng **không ai nhận được trạng thái**.
-- **Hệ quả kết hợp với fire-and-forget:** `MessageBuyerDialog.tsx:197-203` toast "Đã gửi…" ngay khi Ably nhận publish. Ảnh upload lên Etsy hỏng → user **không bao giờ biết**. Rủi ro này MỚI, vì trước đây panel chỉ gửi text (một bước), giờ có 2-3 bước có thể hỏng giữa chừng.
-- **Mức độ:** nên sửa.
-- **Cách sửa:** thêm route `POST /v1/extension/order-messages/status/[id]` ở dora-1 (đối xứng `trackings/status/[id]` đã có) + đổi `callBackend` → `callDoraChat` ở `ably.js:467,484`; hoặc bỏ hẳn hai lời gọi đó và ghi rõ trong JSDoc rằng không có kênh báo trạng thái.
-
-### F4 — `upload2Etsy` không kiểm `response.ok` → ảnh hỏng biến thành "gửi tin rỗng" im lặng
-
-- **Seam:** S3 → Etsy · **Tầng lệch:** extension
-- **Bằng chứng:** `libs/etsy-message.js:83-85` — `const result = await uploadResponse.json(); return result.image_id;`, không kiểm `uploadResponse.ok`. Etsy trả lỗi JSON → `image_id` = `undefined` → `uploadOrderAttachments` (`etsy-message.js:211-216`) trả `{0: undefined}` → `sendMessage` (`etsy-message.js:20-23`): `Object.keys(...).length > 0` là TRUE nhưng `JSON.stringify({0: undefined})` === `"{}"` → tin gửi đi **không có ảnh**, không lỗi.
-- Ở nhánh F2 hệ quả nặng hơn: gửi tin **rỗng + không ảnh**.
-- **Mức độ:** nên sửa (tiền sử, dùng chung với Messenger, nhưng feature mới làm nó lộ ra).
-- **Cách sửa:** trong `upload2Etsy` thêm `if (!uploadResponse.ok) throw ...` và `if (!result.image_id) throw ...`.
-
-### F5 — UI không chặn > 10 ảnh → upload lãng phí rồi mới 400
-
-- **Seam:** S8 · **Tầng lệch:** 4 (component)
-- **Bằng chứng:** `components/orders/MessageBuyerDialog.tsx:147-169` (`onPaste` append vô điều kiện), `:174-186` (`send` không đếm). Route chặn ở `app/api/orders/message/route.ts:44-46`.
-- Ảnh thứ 11 vẫn đã nằm vĩnh viễn trên Vercel Blob (tốn tiền, không ai xoá) trước khi user thấy lỗi.
-- **Cách sửa:** trong `onPaste` cắt `imageFiles` theo `10 - attachments.length` + `toast.error("Tối đa 10 ảnh mỗi tin")`.
-
-### F6 — File sai MIME bị bỏ IM LẶNG khi dán nhiều ảnh
-
-- **Seam:** S7 · **Tầng lệch:** 4 ↔ `lib/upload-image.ts`
-- **Bằng chứng:** `lib/upload-image.ts:26` — `if (f.type && !ALLOWED_IMAGE_TYPES.has(f.type)) continue;` (bỏ qua, không báo). `MessageBuyerDialog.tsx:158-161` chỉ toast khi `urls.length === 0`.
-- Dán 3 ảnh trong đó 1 ảnh `image/bmp`/`image/svg+xml` (lọt qua bộ lọc `type.startsWith("image/")` ở `MessageBuyerDialog.tsx:149`) → mất 1 ảnh, **không thông báo**.
-- **Cách sửa:** `uploadImageFiles` trả `{ urls, skipped }`, hoặc so `urls.length !== imageFiles.length` ở caller để toast cảnh báo.
-
-### F7 — `resolveShopUserIdByName` gọi lại mỗi request, không cache (hồi quy)
-
-- **Seam:** thread panel · **Tầng lệch:** 1 (service)
-- **Bằng chứng:** `lib/services/order-conversation.ts:120` gọi mỗi lần `getOrderConversation`. Panel poll tới **9 lần/24s** (`MessageBuyerDialog.tsx:24-25,116-127`) → 9 query `dora-master.stores` cho cùng 1 shop.
-- `lib/services/shop-read.ts:75-77` đã có sẵn mẫu cache TTL 5 phút cho `resolveShopNameByUserId`, nhưng `resolveShopUserIdByName` (`shop-read.ts:32-47`) không dùng.
-- **Cách sửa:** thêm `Map<string, {id, at}>` TTL 5 phút y hệt mẫu ngay bên dưới nó.
-
-## 3. Ghi nhận (không chặn, nên biết)
-
-- **G1 — `saveOrderConversations` gọi `parseOrderConvoMessages` thiếu opts mới.** `lib/services/order-conversation-sync.ts:254` truyền `{ orderId, shopName }`, không có `shopUserId`/`buyerId`. **Hiện KHÔNG phải bug**: kết quả chỉ dùng `.length` để ghi `message_count`, mà `fromMe` không ảnh hưởng số lượng. Đã grep toàn repo: đúng **2 caller** (`order-conversation-sync.ts:254`, `order-conversation.ts:121`), không sót chỗ nào. Rủi ro drift nếu sau này lưu luôn mảng parsed — nên thêm comment tại chỗ.
-- **G2 — Không resolve được cả `shopUserId` lẫn `buyerId` → mọi tin `fromMe=false`.** `order-conversation.ts:61-63` lấy `buyerId` từ `etsy_orders` (projection `:53` có đủ `data.buyer` + `data.buyer_id` ✓). Đơn không có trong `etsy_orders` **và** shop chưa có trong `dora-master.stores` → `isFromShop` (`order-conversation-sync.ts:126-151`) rơi xuống lưới đỡ cờ/tên, mà payload thật không có cờ nào → thread dồn hết về phía khách. Suy giảm có kiểm soát, đúng như comment đã ghi.
-- **G3 — Whitelist MIME nhân bản 3 nơi.** `lib/upload-image.ts:9-14` ≡ `app/api/uploads/route.ts:7` ≡ `components/messenger/ConversationView.tsx:29`. **S7 hiện KHỚP CHÍNH XÁC** (jpeg/png/gif/webp, đã so từng phần tử). Contract cố ý không refactor ConversationView; ghi lại để lần sau gom về `lib/upload-image.ts`.
-- **G4 — Ảnh trên Blob không bao giờ được dọn.** `MessageBuyerDialog.tsx:171-172` `removeAttachment` chỉ bỏ khỏi state; đóng panel không gửi cũng vậy. Giống hành vi Messenger hiện tại.
-- **G5 — `uploading` là boolean, không phải bộ đếm.** `MessageBuyerDialog.tsx:154-168`: dán lần 2 khi lần 1 chưa xong → lần 1 `finally` set `false` trong khi lần 2 còn chạy → nút Gửi mở sớm, có thể gửi thiếu ảnh. Xác suất thấp; sửa bằng `useRef` đếm upload đang chạy.
-- **G6 — Ảnh vừa gửi có thể chưa hiện lại trong thread.** `ably.js:476` gọi `fetchAndPostOrderConvos([orderId])` NGAY sau `sendMessage` (Etsy có thể chưa index tin mới), và `pickImages` (`order-conversation-sync.ts:67-90`) dò `attachments[].url / image_data.url / full_url / src / thumbnail_url` — shape attachment thật của `mission-control/orders/convos` **chưa xác nhận bằng dữ liệu thật**. Cần nhìn 1 thread thật sau khi gửi ảnh. (Mẫu đã chứng minh ở Messenger: `lib/services/message-read.ts:84-100` cũng dùng `image_data.url`/`url` → khả năng cao khớp.)
-- **G7 — `next build` không typecheck** (`next.config.mjs:3-5`). Quy trình QA phải luôn chạy `npx tsc --noEmit` riêng.
-
-## 4. Seam đã kiểm và ĐẠT
-
-| Seam | Kết luận | Bằng chứng đối chiếu |
-|------|----------|----------------------|
-| **S1** `attachments` UI→route | ĐẠT — cùng tên, cùng `string[]` | `MessageBuyerDialog.tsx:181-186` (state `:38` là `string[]`) ↔ `route.ts:21-26,40-43` |
-| **S2** route→`publishSendOrderMessage` | ĐẠT — route LUÔN truyền mảng (kể cả rỗng), type bắt buộc không optional | `route.ts:49-54` ↔ `ably-publish.ts:187-190` |
-| **S3** payload Ably ↔ extension đọc | ĐẠT — khớp **từng field**: `id` / `order_id` / `message` / `attachments` / `clientId` | publish `ably-publish.ts:199` ↔ đọc `ably.js:419-428` |
-| **S3b** shape `image_ids` | ĐẠT — `uploadOrderAttachments` (`etsy-message.js:211-216`) tạo `{0:id,1:id}` **y hệt** luồng Messenger đang chạy tốt (`ably.js:549-564`), cùng đi vào `sendMessage` (`etsy-message.js:20-23`) → `attachments: JSON.stringify({...})`. Không ảnh → `{}` → `'{}'` ⇒ không hồi quy tin text. | |
-| **S4** URL public Blob | ĐẠT — `access:"public"` (`lib/upload-image.ts:27-31`); extension `fetch(link)` (`etsy-message.js:54`) đúng cơ chế đã chạy production ở Messenger (cùng `/api/uploads`, cùng `upload()`: `ConversationView.tsx:166-169`) | |
-| **S5** `message` non-empty | ĐẠT CẢ 2 TẦNG — UI `MessageBuyerDialog.tsx:175` + `:348`; route `route.ts:30-35`. **Đã chạy thật: T1 → 400.** Validate message đứng TRƯỚC validate attachments nên message rỗng + 11 ảnh vẫn ra lỗi message. | |
-| **S6** `conversationId` không chặn gửi | ĐẠT — chỉ dùng ở `MessageBuyerDialog.tsx:198` (toast) và `:213-214` (link Messenger); `send()` (`:174-175`) không đụng tới | |
-| **S7** whitelist MIME | ĐẠT — 4/4 khớp chính xác: `lib/upload-image.ts:9-14` ↔ `app/api/uploads/route.ts:7` | |
-| **S8** giới hạn 10 | ĐẠT ở chốt chặn thật (route, **T2 → 400 đúng text**); UI chưa chặn → F5 | |
-| **DB routing** | ĐẠT — không dính mẫu "sai DB": `stores`, `etsy_orders`, `order_conversations` đều `STORES_DB_NAME` = `dora-master` (`lib/db/collections.ts:155-158,164-167,185-188`). Feature này không đọc/ghi Mongo. | |
-| **Thứ tự nạp script extension** | ĐẠT — `manifest.json:30-39`: `etsy-message.js` → `content.js` → `ably.js`, nên `uploadOrderAttachments` / `getOrderConvoSafe` / `createOrderConvoMessage` / `fetchAndPostOrderConvos` đều có mặt khi `ably.js` gọi | |
-| **`order_id` string↔number** | ĐẠT — dora-1 gửi string (`route.ts:28`), extension `Number(orderId)` trước khi POST về (`content.js:860,866`), dora-1 `asNumber` chấp nhận cả chuỗi số (`lib/services/etsy-utils.ts:4-10`) → không rơi vào nhánh `skipped` của `saveOrderConversations` | |
-
-## 5. Hồi quy `order-conversation*` / `shop-read`
-
-- Grep toàn repo: `parseOrderConvoMessages` có đúng **2 caller**; `OrderConvoParseOpts` export và dùng nhất quán; `resolveShopUserIdByName` có đúng 1 caller. **Không có caller nào thiếu opts mới gây lỗi** (chi tiết G1).
-- `saveOrderConversations` vẫn parse đúng: `unwrapConvo` → `pickRawMessages` → `message_count`; `pickConversationId` không đổi; `$set`/`$setOnInsert` giữ nguyên (`order-conversation-sync.ts:246-270`). Đã gọi thật `POST /v1/extension/order-conversations/sync` với `{"orders":[]}` → **200**.
-- `isFromShop` đổi chữ ký (`m, senderId, opts`) — mọi call site đã cập nhật (`order-conversation-sync.ts:170`), `tsc` sạch.
-- Thứ tự ưu tiên id mới (`convo_message_id` trước) và `createDate` (đẩy `timestamp` xuống cuối) hợp lý với shape thật đã ghi trong JSDoc.
-
-## 6. Việc cần làm trước khi bật cho user
-
-1. **Test tay nhánh F2** (đơn CHƯA có hội thoại + dán ảnh) — nhánh duy nhất chưa từng chạy.
-2. Quyết định F1 (Apps Script còn dùng `/api/orders/message` không) và F3 (có cần kênh báo trạng thái không).
-3. F4 / F5 / F6 là sửa nhỏ, độc lập nhau.
-
----
-
-## Xử lý sau QA (orchestrator)
-
-| Finding | Mức | Xử lý |
-|---|---|---|
-| F2 `sendMessage(convoId, '', imageIds)` chưa xác nhận Etsy nhận message rỗng | chặn merge | ĐÃ SỬA — `libs/ably.js`: thử gửi tin chỉ-ảnh trước, thất bại thì gửi lại kèm `messageBody` (thà trùng chữ còn hơn mất ảnh). Vẫn cần test tay 1 đơn chưa có hội thoại. |
-| F4 `upload2Etsy` không kiểm `response.ok` → mất ảnh im lặng | nên sửa | ĐÃ SỬA — `libs/etsy-message.js`: throw khi `!ok` hoặc thiếu `image_id`. |
-| F5 UI không chặn >10 ảnh | nên sửa | ĐÃ SỬA — `MessageBuyerDialog.tsx`: `MAX_ATTACHMENTS = 10`, cắt trước khi upload. |
-| F6 file sai MIME bị bỏ im lặng | nên sửa | ĐÃ SỬA — toast báo số ảnh bị bỏ. |
-| F7 `resolveShopUserIdByName` không cache (9 query/lần mở panel) | nên sửa | ĐÃ SỬA — `shop-read.ts`: cache TTL 5 phút theo mẫu `shopNameCache` sẵn có, cache cả kết quả null. |
-| F1 `proxy.ts` chặn nhánh `x-api-key` của `/api/orders/message` | nên sửa | KHÔNG SỬA — lỗi có sẵn từ trước, ngoài phạm vi yêu cầu. Báo user quyết định. |
-| F3 endpoint `extension/order-messages/status/{id}` không tồn tại ở repo nào | nên sửa | KHÔNG SỬA — có sẵn từ trước (luồng gửi tin theo đơn vốn fire-and-forget). Báo user quyết định. |
+Ghi chú từ backend, không tính là finding: `find` và `countDocuments` chạy song song nên không cùng snapshot; `total` có thể lệch 1–2 so với `items.length` (chỉ ảnh hưởng toast truncated). Trần `PINNED_TAGS_MAX` là đọc-rồi-ghi.

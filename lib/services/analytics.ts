@@ -6,9 +6,12 @@ import {
 } from "@/lib/db/collections";
 import { getShops } from "@/lib/services/shop-read";
 import { mapConversation } from "@/lib/services/conversation-read";
+import { COMPLETED_LIST_LIMIT } from "@/lib/types/etsy";
 import type {
   AgentPerformanceResponse,
   AiEffectivenessResponse,
+  CompletedConversationsResponse,
+  CompletedScope,
   ShopAnalyticsResponse,
   ConversationDoc,
   MessageOverviewResponse,
@@ -83,6 +86,25 @@ const UNREAD_EXPR = {
     },
   ],
 };
+
+/**
+ * Filter find(): hội thoại "đã xong" = PHẦN BÙ CHÍNH XÁC của UNREAD_EXPR — sửa cái này thì
+ * sửa cái kia, không thì số trên cột "Đã xong" (total - unread) lệch với số tin mở ra.
+ * `$ne: false` khớp cả has_replied thiếu/null/true: đúng như `$eq` trong aggregate coi
+ * field thiếu là "không unread".
+ */
+const COMPLETED_MATCH = {
+  $or: [{ "etsy.has_replied": { $ne: false } }, { tags: { $in: HANDLED_TAGS } }],
+} as Filter<ConversationDoc>;
+
+/**
+ * Bucket "No Tag": tags rỗng/không tồn tại. Dùng chung cho phép đếm (getTagsOverview) và
+ * danh sách tin đã xong (getCompletedConversations) để 2 bên luôn cùng tập hội thoại.
+ * (Doc có `tags: null` không thuộc bucket nào — chấp nhận, nhất quán cả 2 phía.)
+ */
+const UNTAGGED_MATCH = {
+  $or: [{ tags: { $exists: false } }, { tags: { $size: 0 } }],
+} as Filter<ConversationDoc>;
 
 /** Tổng Total/Unread/Completed cho 1 base match. */
 async function computeTotals(base: Filter<ConversationDoc>): Promise<OverviewTotals> {
@@ -420,11 +442,7 @@ export async function getTagsOverview(opts: AnalyticsOpts): Promise<TagsOverview
     // Bucket "No Tag": tags rỗng/không tồn tại.
     coll
       .aggregate<{ total: number; unread: number }>([
-        {
-          $match: {
-            $and: [base, { $or: [{ tags: { $exists: false } }, { tags: { $size: 0 } }] }],
-          },
-        },
+        { $match: { $and: [base, UNTAGGED_MATCH] } },
         {
           $group: {
             _id: null,
@@ -462,19 +480,82 @@ export async function getTagsOverview(opts: AnalyticsOpts): Promise<TagsOverview
     untagged: false,
     total: r.total,
     unread: r.unread,
+    completed: Math.max(r.total - r.unread, 0),
     unreadConversations: unreadByTag.get(r._id) ?? [],
   }));
 
   const noTagTotal = untaggedRow[0]?.total ?? 0;
   if (noTagTotal > 0) {
+    const noTagUnread = untaggedRow[0]?.unread ?? 0;
     tags.unshift({
       tag: "No Tag",
       untagged: true,
       total: noTagTotal,
-      unread: untaggedRow[0]?.unread ?? 0,
+      unread: noTagUnread,
+      completed: Math.max(noTagTotal - noTagUnread, 0),
       unreadConversations: unreadNoTag,
     });
   }
 
   return { totals, tags };
+}
+
+/**
+ * Điều kiện phạm vi của 1 dòng — PHẢI trùng match mà phép đếm của dòng đó dùng, để số trên
+ * nút "Đã xong" == total trả về:
+ * - tag: getTagsOverview `$unwind: "$tags"` + group theo tag.
+ * - untagged: UNTAGGED_MATCH (dùng chung với untaggedRow).
+ * - shop > 0: getShopCounts group theo user_data.user_id.
+ * - shop = 0: dòng "Chưa xác định shop" gộp mọi nhóm !isValidShopId (thiếu/null/0/âm/không
+ *   phải số). `$gt: 0` chỉ so được với kiểu số nên `$not` bắt đúng phần còn lại.
+ */
+function scopeMatch(scope: CompletedScope): Filter<ConversationDoc> {
+  switch (scope.kind) {
+    case "tag":
+      return { tags: scope.tag } as Filter<ConversationDoc>;
+    case "untagged":
+      return UNTAGGED_MATCH;
+    case "shop":
+      return (
+        scope.shopId > 0
+          ? { "user_data.user_id": scope.shopId }
+          : { "user_data.user_id": { $not: { $gt: 0 } } }
+      ) as Filter<ConversationDoc>;
+  }
+}
+
+/**
+ * Danh sách hội thoại đã xong trong 1 phạm vi (lazy — chỉ gọi khi người dùng bấm mở).
+ * Mới nhất trước (index idx_lastMessageDate_id) để khi cắt ở COMPLETED_LIST_LIMIT thì giữ
+ * tin gần nhất; `total` đếm không cắt để UI báo khi bị cắt.
+ */
+export async function getCompletedConversations(
+  opts: AnalyticsOpts,
+  scope: CompletedScope,
+): Promise<CompletedConversationsResponse> {
+  const coll = await getConversationsCollection();
+  const filter = {
+    $and: [buildBaseMatch(opts), scopeMatch(scope), COMPLETED_MATCH],
+  } as Filter<ConversationDoc>;
+
+  const [docs, total, shops] = await Promise.all([
+    coll
+      .find(filter, { projection: UNREAD_PROJECTION })
+      .sort({ lastMessageDate: -1, _id: -1 })
+      .limit(COMPLETED_LIST_LIMIT)
+      .toArray() as Promise<WithId<ConversationDoc>[]>,
+    coll.countDocuments(filter),
+    getShops().catch(() => []),
+  ]);
+
+  const shopNameById = new Map(shops.map((s) => [s.userId, s.shopName]));
+  const items = docs.map(mapConversation).map((c) => {
+    // Giống bucket unread của getTagsOverview: tên từ getShops, fallback "Shop <id>";
+    // không quy được về shop (id ≤ 0) → bỏ field shop.
+    const shopName =
+      shopNameById.get(c.shopUserId) || (c.shopUserId > 0 ? `Shop ${c.shopUserId}` : "");
+    return toUnreadItem(c, shopName);
+  });
+
+  return { items, total, truncated: total > items.length };
 }

@@ -128,6 +128,11 @@ const TRACKING_JOB_INDEXES: IndexDef[] = [
   },
 ];
 
+const USER_PREFERENCE_INDEXES: IndexDef[] = [
+  // 1 doc / email — unique để 2 lần ghim đồng thời (upsert) không sinh 2 doc cho cùng người.
+  { keys: { email: 1 }, options: { name: "uq_email", unique: true } },
+];
+
 const REPLY_EXAMPLE_INDEXES: IndexDef[] = [
   // Lọc theo shop + lấy ví dụ mới nhất (candidate cho cosine fallback).
   { keys: { shopId: 1, created_at: -1 }, options: { name: "idx_shop_created" } },
@@ -225,4 +230,5 @@ export async function ensureIndexes(db: Db): Promise<void> {
   await createIndexes(db, "carrier_rules", CARRIER_RULE_INDEXES);
   await createIndexes(db, "reply_examples", REPLY_EXAMPLE_INDEXES);
   await createIndexes(db, "ai_suggestion_events", AI_EVENT_INDEXES);
+  await createIndexes(db, "user_preferences", USER_PREFERENCE_INDEXES);
 }

@@ -713,6 +713,8 @@ export interface TagOverviewRow {
   untagged: boolean;
   total: number;
   unread: number;
+  /** = max(total - unread, 0), tính ở server (giống ShopOverviewRow.completed). */
+  completed: number;
   unreadConversations: UnreadConvItem[];
 }
 
@@ -721,6 +723,29 @@ export interface TagsOverviewResponse {
   totals: OverviewTotals;
   tags: TagOverviewRow[];
 }
+
+/**
+ * Phạm vi 1 danh sách "tin đã xong" — khớp đúng 1 dòng trong bảng Tag hoặc bảng Shop.
+ * Query string tương ứng (đúng 1 trong 3): `tag=<tên>` | `untagged=1` | `shopId=<số>`.
+ * shopId=0 = dòng "Chưa xác định shop" (user_data.user_id thiếu/không phải số dương).
+ */
+export type CompletedScope =
+  | { kind: "tag"; tag: string }
+  | { kind: "untagged" }
+  | { kind: "shop"; shopId: number };
+
+/** Phản hồi GET /api/analytics/completed-conversations (lazy, chỉ gọi khi bấm mở). */
+export interface CompletedConversationsResponse {
+  /** Mới nhất trước, tối đa COMPLETED_LIST_LIMIT phần tử. `shop` có khi quy được về shop. */
+  items: UnreadConvItem[];
+  /** Tổng số hội thoại đã xong khớp phạm vi (KHÔNG bị cắt) — cùng điều kiện với cột "Đã xong". */
+  total: number;
+  /** true khi total > items.length (bị cắt theo giới hạn). */
+  truncated: boolean;
+}
+
+/** Giới hạn số hội thoại đã xong trả về cho 1 lần mở (server cắt, UI báo khi truncated). */
+export const COMPLETED_LIST_LIMIT = 500;
 
 /** Collection `message_templates` — mẫu câu sẵn do nhân viên tạo. */
 export interface MessageTemplateDoc {
