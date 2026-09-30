@@ -5,6 +5,8 @@ import type {
   AgentPerformanceResponse,
   AiEffectivenessResponse,
   AnalyticsFilters,
+  CompletedConversationsResponse,
+  CompletedScope,
   ShopAnalyticsResponse,
   MessageOverviewResponse,
   TagsOverviewResponse,
@@ -68,4 +70,26 @@ export function useTagsOverview(filters: AnalyticsFilters) {
     queryFn: () => fetchJson<TagsOverviewResponse>("/api/analytics/tags-overview", filters),
     ...COMMON,
   });
+}
+
+/** Key cache cho danh sách tin đã xong theo phạm vi (dùng với queryClient.fetchQuery). */
+export function completedConversationsKey(filters: AnalyticsFilters, scope: CompletedScope) {
+  return ["analytics", "completed", filters, scope] as const;
+}
+
+/**
+ * Lấy danh sách hội thoại đã xong theo phạm vi — lazy, chỉ gọi khi bấm mở (KHÔNG phải useQuery).
+ * Gửi đúng 1 tham số phạm vi: tag / untagged=1 / shopId.
+ */
+export async function fetchCompletedConversations(
+  filters: AnalyticsFilters,
+  scope: CompletedScope,
+): Promise<CompletedConversationsResponse> {
+  const params = new URLSearchParams(buildParams(filters));
+  if (scope.kind === "tag") params.set("tag", scope.tag);
+  else if (scope.kind === "untagged") params.set("untagged", "1");
+  else params.set("shopId", String(scope.shopId));
+  const res = await fetch(`/api/analytics/completed-conversations?${params.toString()}`);
+  if (!res.ok) throw new Error(`completed-conversations ${res.status}`);
+  return (await res.json()) as CompletedConversationsResponse;
 }

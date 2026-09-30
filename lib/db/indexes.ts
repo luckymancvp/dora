@@ -25,6 +25,13 @@ const CONVERSATION_INDEXES: IndexDef[] = [
     options: { name: "idx_receipt_id" },
   },
   { keys: { "etsy.order_info.order_id": 1 }, options: { name: "idx_order_id" } },
+  // Buyer guest: Mera (fulfill) khớp order → hội thoại qua etsy_orders.data.buyer_id →
+  // etsy.other_user.user_id. Không có index thì COLLSCAN ~65k doc (~200ms). Index này ĐÃ
+  // được tạo tay trên prod cùng tên + key (2026-09-30) → giữ nguyên để createIndex idempotent.
+  {
+    keys: { "etsy.other_user.user_id": 1 },
+    options: { name: "idx_other_user_id" },
+  },
   // Lọc "Has note": multikey sparse — chỉ index doc có ≥1 note (hỗ trợ truy vấn $exists).
   {
     keys: { "notes.authorEmail": 1 },
@@ -119,6 +126,11 @@ const TRACKING_JOB_INDEXES: IndexDef[] = [
     keys: { "orders.tracking_number": 1 },
     options: { name: "idx_orders_tracking_number" },
   },
+];
+
+const USER_PREFERENCE_INDEXES: IndexDef[] = [
+  // 1 doc / email — unique để 2 lần ghim đồng thời (upsert) không sinh 2 doc cho cùng người.
+  { keys: { email: 1 }, options: { name: "uq_email", unique: true } },
 ];
 
 const REPLY_EXAMPLE_INDEXES: IndexDef[] = [
@@ -218,4 +230,5 @@ export async function ensureIndexes(db: Db): Promise<void> {
   await createIndexes(db, "carrier_rules", CARRIER_RULE_INDEXES);
   await createIndexes(db, "reply_examples", REPLY_EXAMPLE_INDEXES);
   await createIndexes(db, "ai_suggestion_events", AI_EVENT_INDEXES);
+  await createIndexes(db, "user_preferences", USER_PREFERENCE_INDEXES);
 }

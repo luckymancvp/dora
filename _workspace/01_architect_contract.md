@@ -1,103 +1,174 @@
-# 01 — Hợp đồng kiểu: Dán ảnh + gửi ảnh kèm tin trong panel "Nhắn khách" (Orders)
+# 01 — Hợp đồng kiểu: Ghim tag + cột/mở "Đã xong" trên Dashboard
 
-Ngày: 2026-09-17 · Phạm vi: dora-1 (repo này). Phần extension do orchestrator tự sửa, agent KHÔNG đụng.
+Ngày: 2026-09-30 · Phạm vi: dora-1. Hai panel nằm ở **`app/page.tsx`** (Dashboard gốc), KHÔNG phải `app/board/page.tsx` — không cần sửa file page nào.
 
-## 0. Quyết định chốt (đọc trước khi code)
+Các panel: `components/dashboard/TagsOverview.tsx`, `components/dashboard/MessageOverview.tsx`.
+
+## 0. Quyết định chốt
 
 | # | Vấn đề | Quyết định |
 |---|--------|-----------|
-| D1 | Tên field ở ranh giới Ably | `attachments: string[]` (snake_case-neutral, TRÙNG tên đã dùng ở event `chat-message` — xem `lib/services/message-send.ts:83`). KHÔNG đặt `attachment_urls`, `images`, `image_ids`. |
-| D2 | Giá trị của `attachments` | Mảng **public URL** của Vercel Blob (https://...), KHÔNG phải Etsy image_id. Extension mới là bên gọi `upload2Etsy(convo_id, url)` để đổi URL → image_id. |
-| D3 | Có chặn gửi ảnh khi đơn chưa có hội thoại (`conversationId === null`) không? | **KHÔNG chặn.** Cứ gửi, extension xử lý 2 bước (createOrderConvoMessage bằng text để có convo_id → upload2Etsy → sendMessage kèm image_ids). dora-1 không biết chắc trạng thái hội thoại thật trên Etsy (DB có thể chưa sync) nên chặn sẽ sai nhiều hơn đúng. |
-| D4 | Hệ quả của D3 | `message` **vẫn bắt buộc non-empty** (giữ nguyên validate hiện có). Lý do: đơn chưa có hội thoại thì extension cần text để tạo hội thoại; ảnh trần sẽ không gửi được. → Không hỗ trợ "gửi ảnh không kèm chữ" ở panel này. |
-| D5 | UI thông báo về D4 | Nút Gửi disabled khi `!message.trim()`; khi đã chọn ảnh mà chưa có chữ, hiện hint nhỏ: "Ảnh phải gửi kèm nội dung tin nhắn." Không hiện cảnh báo gì về convo_id. |
-| D6 | Type file mới | **Không cần** type mới trong `lib/types/*`. Body và event data khai báo inline như code hiện tại (giống `publishChatMessage`). |
-| D7 | Giới hạn | Tối đa **10** ảnh / lần gửi; chỉ MIME `image/jpeg|png|gif|webp` (khớp `app/api/uploads/route.ts`). Vượt → 400. |
+| D1 | Định nghĩa "đã xong" | **Phần bù CHÍNH XÁC của `UNREAD_EXPR`** trong `lib/services/analytics.ts:75`. Unread = `etsy.has_replied == false` (so `$eq`, nên field thiếu/null ≠ false) **VÀ** không có tag `handled`/`approved`. → Đã xong = `{ $or: [ { "etsy.has_replied": { $ne: false } }, { tags: { $in: HANDLED_TAGS } } ] }`. (`$ne:false` khớp cả field thiếu/null/true — đúng như `$eq` trong aggregate coi thiếu là "không unread".) Không định nghĩa lại theo cách khác. |
+| D2 | Danh sách tin đã xong | **Lazy**: endpoint mới `GET /api/analytics/completed-conversations`, chỉ gọi khi bấm. KHÔNG thêm mảng completed vào response overview/tags-overview (refetch 10s). |
+| D3 | Phạm vi (scope) | Đúng 1 trong 3 query param: `tag=<tên>` \| `untagged=1` \| `shopId=<số nguyên ≥0>`, cộng `from/to/shopIds` y như overview (dùng `parseAnalyticsParams`). Điều kiện phạm vi dùng **đúng cùng match** với phép đếm của dòng tương ứng (xem §1.3). |
+| D4 | Giới hạn | `COMPLETED_LIST_LIMIT = 500` (export từ `lib/types/etsy.ts`). Sort **mới nhất trước** (`lastMessageDate:-1, _id:-1` — có index `idx_lastMessageDate_id`) để khi cắt thì giữ tin gần nhất. Response có `total` (không cắt) + `truncated`. UI báo bằng toast khi `truncated`. (Trang /open-multiple tự sort lại theo ts nên thứ tự server chỉ quyết định tập bị cắt.) |
+| D5 | Vị trí nút mở tin đã xong | **Biến ô số "Đã xong" thành nút bấm** (pill xanh có icon), ở CẢ 2 bảng. Cột "Hành động" giữ nguyên cho "Mở N" tin chưa trả lời. Lý do: số trên nút = thứ được mở, không nhầm với nút "Mở N" unread; không phình cột Hành động. `completed === 0` → hiện số thường, không phải nút. |
+| D6 | Không thêm nút "mở tất cả tin đã xong" ở StatCard "Đã xong" | Không yêu cầu → không làm (StatCard giữ nguyên). |
+| D7 | Popup / window.open sau await | Hook mới fetch xong rồi gọi `useOpenMultiple()` hiện có (không sửa hook đó, không sửa /open-multiple). Dựa vào transient user activation của Chrome (~5s) — truy vấn có limit 500 + index, dự kiến < 1s. Chấp nhận rủi ro; KHÔNG làm cơ chế mở-cửa-sổ-trước. |
+| D8 | Lưu tag ghim | **Server-side theo email** — collection mới `user_preferences` (DB `meta_local`), 1 doc/email, field `pinnedTags: string[]`. Endpoint `GET` + `PATCH /api/me/pinned-tags`. `/api/me/*` đã được `proxy.ts` bảo vệ bằng session (không cần sửa proxy). |
+| D9 | PATCH nguyên tử thay vì PUT cả mảng | Body `{ tag, pinned }` → server `$addToSet` / `$pull`. Lý do: bấm ghim nhanh 2 tag liên tiếp với PUT-cả-mảng có thể về server sai thứ tự và ghi đè mất 1 tag; `$addToSet/$pull` giao hoán giữa các tag khác nhau. |
+| D10 | Ghim "No Tag" | **Cho phép**, bằng khoá sentinel `UNTAGGED_PIN_KEY = "__untagged__"` (export từ `lib/types/user-preferences.ts`). Mọi dòng đều có icon ghim — UX nhất quán. Không dùng chuỗi "No Tag" (có thể trùng tag thật do người dùng tự gõ). |
+| D11 | Sắp xếp bảng tag | Nhóm ghim lên đầu, nhóm không ghim sau; trong MỖI nhóm giữ sort hiện có `b.unread - a.unread` (sort ổn định, hoà thì giữ thứ tự server). Tag ghim nhưng không có dòng trong kỳ lọc → không hiện (không dựng dòng rỗng). |
+| D12 | `TagOverviewRow.completed` | **Thêm field** `completed` tính ở server = `max(total-unread,0)` (giống `ShopOverviewRow.completed`) — frontend KHÔNG tự trừ. |
+| D13 | Tên tag lưu ghim | Giá trị DB của tag (`TagOverviewRow.tag`), KHÔNG phải `tagLabel()`. Server **không trim** giá trị (phải khớp y hệt), chỉ từ chối rỗng/toàn khoảng trắng và dài > 100. |
 
-## 1. Type contract
+## 1. Type contract (đã ghi vào code)
 
-### 1.1 Body `POST /api/orders/message` (UI → route)
-
-```ts
-{
-  shopName: string;        // bắt buộc, non-empty sau trim
-  orderId: string | number; // bắt buộc
-  message: string;         // BẮT BUỘC non-empty sau trim (xem D4)
-  attachments?: string[];  // MỚI — optional, mảng public URL ảnh; bỏ qua = []
-}
-```
-
-Ràng buộc validate ở route:
-- `attachments` không phải mảng → coi như `[]` (không 400, giữ tương thích caller cũ Apps Script).
-- Lọc phần tử: chỉ giữ `typeof x === "string"` và `x.trim()` bắt đầu bằng `http://` hoặc `https://`.
-- Sau lọc, `length > 10` → `400 { error: "Tối đa 10 ảnh mỗi tin" }`.
-
-Response KHÔNG đổi: `{ ok: true, id, clientId }` | `{ error, code?: "shop_offline" }`.
-
-### 1.2 Data event Ably `send-order-message` (route → extension)
-
-`publishSendOrderMessage(shopName, data)` với:
+### 1.1 `lib/types/etsy.ts` (đã sửa)
 
 ```ts
-data: {
-  id: string;            // randomUUID, đã có
-  order_id: string;      // đã có
-  message: string;       // đã có
-  attachments: string[]; // MỚI — LUÔN có mặt, mảng rỗng nếu không gửi ảnh
+export interface TagOverviewRow {
+  tag: string;
+  untagged: boolean;
+  total: number;
+  unread: number;
+  completed: number;                 // MỚI — max(total-unread,0), server tính
+  unreadConversations: UnreadConvItem[];
 }
+
+export type CompletedScope =          // MỚI
+  | { kind: "tag"; tag: string }
+  | { kind: "untagged" }
+  | { kind: "shop"; shopId: number }; // 0 = dòng "Chưa xác định shop"
+
+export interface CompletedConversationsResponse {  // MỚI
+  items: UnreadConvItem[];  // mới nhất trước, ≤ COMPLETED_LIST_LIMIT
+  total: number;            // tổng khớp phạm vi, KHÔNG cắt
+  truncated: boolean;       // total > items.length
+}
+
+export const COMPLETED_LIST_LIMIT = 500;           // MỚI
 ```
 
-Payload publish thực tế = `{ ...data, clientId: targetClientId }` (giữ nguyên cơ chế cũ).
-Channel = `shop_name`, event const `SEND_ORDER_MESSAGE_EVENT = "send-order-message"`.
+`UnreadConvItem` **giữ nguyên tên và shape** (`conversationId, name, avatar, lastMessageDate, shop?`) — dùng lại cho item đã xong vì `useOpenMultiple` nhận đúng type này. Không đổi tên.
 
-Lưu ý ranh giới: các field payload dùng snake_case (`order_id`, `attachments`), riêng `clientId` giữ camelCase vì đã là quy ước chung của mọi event hiện tại — KHÔNG đổi.
+### 1.2 `lib/types/user-preferences.ts` (file mới, đã tạo)
 
-### 1.3 Không đổi
-- `/api/uploads` (đã có, đã miễn auth ở middleware) — frontend dùng `upload()` của `@vercel/blob/client` với `handleUploadUrl: "/api/uploads"`.
-- `/api/orders/conversation`, `/api/orders/conversation/fetch`, type `OrderConversation` trong MessageBuyerDialog.
+```ts
+export interface UserPreferencesDoc { _id?: ObjectId; email: string; pinnedTags: string[]; updated_at: Date; }
+export const UNTAGGED_PIN_KEY = "__untagged__";
+export const PINNED_TAG_MAX_LENGTH = 100;
+export const PINNED_TAGS_MAX = 100;
+export interface PinnedTagsResponse { pinnedTags: string[]; }
+export interface PinTagBody { tag: string; pinned: boolean; }
+```
 
-## 2. Task backend (`backend-engineer`)
+### 1.3 Match theo phạm vi (backend PHẢI dùng chung với phép đếm)
 
-**B1 — `lib/services/ably-publish.ts`** (1 file)
-- Thêm `attachments: string[]` vào tham số `data` của `publishSendOrderMessage` (bắt buộc, không optional — route luôn truyền mảng).
-- Cập nhật JSDoc: nêu rõ attachments là public URL, extension tự `upload2Etsy` → image_ids; đơn chưa có hội thoại thì extension tạo hội thoại bằng text trước rồi gửi ảnh (2 bước).
+| Scope | Điều kiện phạm vi (AND với `buildBaseMatch(opts)` và COMPLETED_MATCH) | Khớp với phép đếm |
+|---|---|---|
+| `tag` | `{ tags: tag }` | `$unwind: "$tags"` + group theo tag trong `getTagsOverview` |
+| `untagged` | `{ $or: [ { tags: { $exists: false } }, { tags: { $size: 0 } } ] }` | `untaggedRow` trong `getTagsOverview` — **tách thành const `UNTAGGED_MATCH` dùng chung cho cả 2** |
+| `shop`, shopId > 0 | `{ "user_data.user_id": shopId }` | `getShopCounts` group `_id = user_data.user_id` |
+| `shop`, shopId = 0 | `{ "user_data.user_id": { $not: { $gt: 0 } } }` (thiếu/null/0/âm/không phải số) | các nhóm `!isValidShopId(_id)` gộp thành dòng "Chưa xác định shop" |
 
-**B2 — `app/api/orders/message/route.ts`** (1 file)
-- Parse `attachments` từ body, sanitize theo §1.1, truyền xuống `publishSendOrderMessage`.
-- Giữ nguyên validate `message` bắt buộc, auth 2 đường (session / `x-api-key`), response shape.
-- Cập nhật comment đầu file cho khớp body mới.
+Edge đã biết (chấp nhận, không xử lý): doc có `tags: null` không thuộc dòng tag nào lẫn No Tag — nhất quán ở cả đếm lẫn danh sách. Doc có tag lặp (`["a","a"]`) bị đếm 2 lần ở aggregate nhưng 1 lần ở danh sách.
 
-## 3. Task frontend (`frontend-engineer`)
+## 2. Endpoint
 
-**F1 — `lib/upload-image.ts`** (file MỚI, nhỏ ~30 dòng)
-- Export `ALLOWED_IMAGE_TYPES: Set<string>` (jpeg/png/gif/webp, khớp `app/api/uploads/route.ts`).
-- Export `uploadImageFiles(files: File[]): Promise<string[]>` — lặp file, bỏ file sai MIME (throw Error rõ ràng để caller toast), gọi `upload(name, f, { access: "public", handleUploadUrl: "/api/uploads", contentType })`, trả mảng URL.
-- KHÔNG refactor `components/messenger/ConversationView.tsx` trong lần này (ngoài phạm vi yêu cầu).
+### 2.1 `GET /api/analytics/completed-conversations`
 
-**F2 — `components/orders/MessageBuyerDialog.tsx`** (1 file)
-- State mới: `attachments: string[]`, `uploading: boolean`.
-- `onPaste` trên textarea: đọc `e.clipboardData.items`, lọc `kind === "file" && type.startsWith("image/")`, `preventDefault()`, upload qua `uploadImageFiles`, append URL vào `attachments`. (Mẫu: `ConversationView.tsx:186-199`.)
-- Hàng chip preview ảnh (thumbnail + nút X xoá theo URL) ngay trên textarea; hiện spinner/"Đang tải ảnh…" khi `uploading`.
-- `send()`: thêm `attachments` vào JSON body; chặn gửi khi `uploading`.
-- Nút Gửi: `disabled={sending || uploading || !message.trim() || noShop}`; hint D5 khi có ảnh mà chưa có chữ.
-- Sau khi gửi thành công: toast hiện tại + reset `attachments` (panel đóng nên chỉ cần không rò state).
-- Giữ nguyên toàn bộ phần thread/poll hội thoại hiện có.
+- Query: `from`, `to`, `shopIds` (y hệt overview) + **đúng 1** trong `tag=<string>` | `untagged=1` | `shopId=<int ≥ 0>`.
+- 200: `CompletedConversationsResponse`.
+  - `items[].shop`: tên shop từ `getShops()` (map `userId → shopName`), fallback `Shop ${id}` khi id > 0; id = 0 → **bỏ field** `shop` (giống `toUnreadItem` hiện tại).
+- 400: `{ error: string }` khi 0 hoặc >1 tham số phạm vi, `tag` rỗng/toàn khoảng trắng/dài > 100, `untagged` khác `"1"`, `shopId` không phải số nguyên ≥ 0.
+- 401: `{ error: "unauthenticated" }` (auth() như các route analytics khác).
+- 500: `{ error: message }`.
 
-Hai task frontend phụ thuộc tuần tự (F1 trước F2), backend độc lập hoàn toàn với frontend — chỉ khớp qua §1.1.
+### 2.2 `GET /api/me/pinned-tags`
 
-## 4. Bảng seam (đầu vào cho `qa-integration`)
+- 200: `PinnedTagsResponse` — chưa có doc → `{ pinnedTags: [] }`.
+- 401 `{ error: "unauthenticated" }`, 500 `{ error }`.
 
-| # | Field | Nguồn | Qua | Đích | Kiểm tra |
-|---|-------|-------|-----|------|----------|
-| S1 | `attachments` (URL[]) | state trong `MessageBuyerDialog` (F2) | JSON body `POST /api/orders/message` | `route.ts` sanitize | Tên field TRÙNG `attachments` cả 2 phía; là `string[]`, không phải `File[]`/`FileList` |
-| S2 | `attachments` | `route.ts` | tham số `data` của `publishSendOrderMessage` | `ably-publish.ts` | Route luôn truyền mảng (kể cả rỗng) → type bắt buộc, không optional |
-| S3 | `attachments` | `ably-publish.ts` | `channel.publish("send-order-message", {...data, clientId})` | extension `processSendOrderMessage` | Snake_case nhất quán: `id`, `order_id`, `message`, `attachments`, `clientId` |
-| S4 | URL ảnh | `upload()` @vercel/blob/client | `/api/uploads` (token) | Vercel Blob public URL | URL phải public, http(s), extension fetch được không cần cookie |
-| S5 | `message` | textarea | body → Ably | extension (tạo convo nếu convo_id null) | message non-empty là INVARIANT (D4) — QA phải xác nhận route vẫn 400 khi message rỗng dù có ảnh |
-| S6 | `conversationId` | `/api/orders/conversation` | state `convo` trong panel | chỉ dùng cho toast + link Messenger | KHÔNG dùng để chặn gửi ảnh (D3) |
-| S7 | MIME whitelist | `lib/upload-image.ts` (F1) | — | `ALLOWED` trong `app/api/uploads/route.ts` | 2 danh sách phải khớp: jpeg, png, gif, webp |
-| S8 | Giới hạn 10 ảnh | route (400) | — | UI | UI nên ngăn thêm quá 10 trước khi POST (nice-to-have), route là chốt chặn thật |
+### 2.3 `PATCH /api/me/pinned-tags`
 
-## 5. Giả định đã chốt (không hỏi lại)
-- Ảnh lưu ở Vercel Blob (đã dùng cho Messenger), không lưu gì vào `meta_local`/`dora-master` — luồng nhắn theo đơn là fire-and-forget, trạng thái báo về Go backend.
-- Không cần optimistic render ảnh vào thread trong panel (thread chỉ refresh khi extension sync về).
+- Body: `PinTagBody` `{ tag: string; pinned: boolean }`.
+- `pinned: true` → `$addToSet` (upsert theo email); `pinned: false` → `$pull` (KHÔNG upsert). Luôn `$set updated_at`.
+- 200: `PinnedTagsResponse` — mảng SAU cập nhật (đọc lại doc; thiếu → `[]`).
+- 400 `{ error }`: body không phải JSON object, `tag` không phải string / rỗng sau trim / dài > `PINNED_TAG_MAX_LENGTH`, `pinned` không phải boolean, ghim mới khi đã đủ `PINNED_TAGS_MAX` (bỏ ghim luôn được phép; ghim lại tag đã có không tính là vượt).
+- 401, 500 như trên.
+
+## 3. Task backend (`backend-engineer`)
+
+**B1 — `lib/services/analytics.ts`**
+- Thêm const `COMPLETED_MATCH` (D1) ngay dưới `UNREAD_EXPR`, comment rõ "phần bù của UNREAD_EXPR — sửa cái này thì sửa cái kia".
+- Tách const `UNTAGGED_MATCH` và dùng nó trong `untaggedRow` của `getTagsOverview` (không đổi hành vi).
+- `getTagsOverview`: thêm `completed: Math.max(total - unread, 0)` cho cả dòng tag lẫn dòng No Tag.
+- Hàm mới `export async function getCompletedConversations(opts: AnalyticsOpts, scope: CompletedScope): Promise<CompletedConversationsResponse>`:
+  - filter = `{ $and: [buildBaseMatch(opts), scopeMatch(scope) (§1.3), COMPLETED_MATCH] }`.
+  - Song song: `find(filter, { projection: UNREAD_PROJECTION }).sort({ lastMessageDate: -1, _id: -1 }).limit(COMPLETED_LIST_LIMIT)` + `countDocuments(filter)` + `getShops().catch(() => [])`.
+  - Map qua `mapConversation` → `toUnreadItem(c, shopName)` (shopName theo §2.1).
+  - `truncated = total > items.length`.
+- Không đổi `getMessageOverview`, `ShopOverviewRow`, `fetchUnreadConversations`.
+
+**B2 — `lib/services/analytics-params.ts`**: hàm mới `parseCompletedScope(req: NextRequest): CompletedScope | { error: string }` (hoặc throw lỗi 400 riêng — tuỳ, miễn route trả 400 đúng §2.1).
+
+**B3 — `app/api/analytics/completed-conversations/route.ts`** (mới): khuôn giống `app/api/analytics/tags-overview/route.ts` (auth → parse → service → json; log `[GET /api/analytics/completed-conversations]`).
+
+**B4 — `lib/db/collections.ts`**: `getUserPreferencesCollection(): Promise<Collection<UserPreferencesDoc>>` → collection `"user_preferences"` trên `getDb()` (meta_local).
+**`lib/db/indexes.ts`**: `USER_PREFERENCE_INDEXES = [{ keys: { email: 1 }, options: { name: "uq_email", unique: true } }]` + gọi trong `ensureIndexes`.
+
+**B5 — `lib/services/user-preferences.ts`** (mới), khuôn giống `lib/services/message-template.ts` (lớp lỗi có `status` để route map 400):
+- `getPinnedTags(email: string): Promise<string[]>`
+- `setTagPinned(email: string, body: unknown): Promise<string[]>` — validate theo §2.3, rồi `$addToSet`/`$pull`, trả mảng sau cập nhật.
+
+**B6 — `app/api/me/pinned-tags/route.ts`** (mới): `GET`, `PATCH`; email từ `auth()` → `session.user.email`; trả `PinnedTagsResponse`.
+
+## 4. Task frontend (`frontend-engineer`)
+
+**F1 — `lib/hooks/useAnalytics.ts`**
+- `export function completedConversationsKey(filters: AnalyticsFilters, scope: CompletedScope)` → `["analytics", "completed", filters, scope] as const`.
+- `export function fetchCompletedConversations(filters, scope): Promise<CompletedConversationsResponse>` — dùng `buildParams(filters)` rồi thêm đúng 1 param: `tag` / `untagged=1` / `shopId`. `!res.ok` → throw. KHÔNG phải `useQuery` (lazy).
+
+**F2 — `lib/hooks/usePinnedTags.ts`** (mới)
+- `usePinnedTags()` — `useQuery<PinnedTagsResponse>` key `["me", "pinned-tags"]`, `GET /api/me/pinned-tags`, `staleTime: 5 * 60_000`, không `refetchInterval`.
+- `useTogglePinnedTag()` — `useMutation` với `mutationKey: ["me", "pinned-tags"]`, `PATCH` body `PinTagBody`:
+  - `onMutate`: `cancelQueries` key trên, snapshot, `setQueryData` thêm/bớt tag (optimistic).
+  - `onError`: rollback snapshot + `toast.error("Không lưu được tag ghim")` (sonner).
+  - `onSettled`: chỉ `invalidateQueries(["me","pinned-tags"])` khi `queryClient.isMutating({ mutationKey: ["me","pinned-tags"] }) === 1` (tránh response của lần bấm trước đè optimistic của lần bấm sau).
+
+**F3 — `components/dashboard/useOpenCompleted.ts`** (mới)
+- `useOpenCompleted(filters: AnalyticsFilters)` trả `{ openCompleted(scope: CompletedScope, shopName?: string): Promise<void>; pendingKey: string | null }`.
+- `queryClient.fetchQuery({ queryKey: completedConversationsKey(filters, scope), queryFn: () => fetchCompletedConversations(filters, scope), staleTime: 8_000 })`.
+- Nếu truyền `shopName` → ghi đè `shop` của mọi item (bảng shop làm y như nút unread hiện tại: `{ ...c, shop: s.shopName }`).
+- `items.length === 0` → `toast.info("Không có tin đã xong trong phạm vi này")`, không mở.
+- Ngược lại gọi `openMultiple(items)` (hook `useOpenMultiple` hiện có, KHÔNG sửa); nếu `truncated` → `toast.info(\`Chỉ mở ${items.length}/${total} tin đã xong mới nhất\`)`.
+- Lỗi fetch → `toast.error("Không tải được danh sách tin đã xong")`.
+- `pendingKey` = chuỗi định danh scope đang tải (vd `tag:<tên>`, `untagged`, `shop:<id>`); đang pending thì bỏ qua click trùng.
+
+**F4 — `components/dashboard/TagsOverview.tsx`**
+- Cột: `Tag | Tổng | Chưa trả lời | Đã xong | Hành động` (thứ tự giống MessageOverview).
+- Ô "Đã xong": `t.completed > 0` → `<button>` pill (`bg-success-soft text-success`, icon `ExternalLink` h-3 w-3, số `t.completed`, `title="Mở tin đã xong"`), pending → icon `Loader2 animate-spin` + `disabled`. Scope: `t.untagged ? { kind: "untagged" } : { kind: "tag", tag: t.tag }`. `t.completed === 0` → số `0` thường (text-muted-foreground).
+- Ghim: nút icon trong ô Tag, trước tên tag — `Pin` (đã ghim: `text-primary`, fill) / `Pin` muted (chưa ghim), luôn hiển thị, `aria-label`/`title` "Ghim tag" | "Bỏ ghim tag". Khoá ghim: `t.untagged ? UNTAGGED_PIN_KEY : t.tag`. Bấm → `toggle.mutate({ tag: key, pinned: !isPinned })`.
+- Sort (D11): `pinned` desc rồi `unread` desc. Khi `usePinnedTags` đang tải/lỗi → coi như `[]`.
+- Không đổi: StatCard, nút "Mở tin" tổng, cột Hành động "Mở N".
+
+**F5 — `components/dashboard/MessageOverview.tsx`**
+- Ô "Đã xong" hiện là text `s.completed` → đổi thành pill button như F4 khi `s.completed > 0`, scope `{ kind: "shop", shopId: s.shopId }`, truyền `shopName = s.shopName`. Không thêm cột/nút khác. Không ghim ở panel này.
+
+## 5. Bảng seam cho QA (`qa-integration`)
+
+| # | Luồng | Service trả | API | Hook / key | Component đọc |
+|---|------|------------|-----|-----------|---------------|
+| S1 | Cột Đã xong (tag) | `getTagsOverview` → `TagOverviewRow.completed` = max(total-unread,0) | `GET /api/analytics/tags-overview` (không đổi query) | `useTagsOverview` · `["analytics","tags",filters]` | `t.completed` trong TagsOverview (không tự tính total-unread) |
+| S2 | Cột Đã xong (shop) | `ShopOverviewRow.completed` (đã có) | `GET /api/analytics/overview` | `useMessageOverview` · `["analytics","overview",filters]` | `s.completed` |
+| S3 | Mở tin đã xong | `getCompletedConversations(opts, scope)` → `CompletedConversationsResponse` | `GET /api/analytics/completed-conversations?from&to&shopIds` + `tag=` \| `untagged=1` \| `shopId=` | `fetchCompletedConversations` · `["analytics","completed",filters,scope]` qua `fetchQuery` | `useOpenCompleted` → `openMultiple(items)`; `total`, `truncated` cho toast |
+| S4 | Số trên nút == số mở ra | COMPLETED_MATCH là phần bù của UNREAD_EXPR; scope match §1.3 trùng match đếm | — | — | Với dữ liệu tĩnh: `row.completed === response.total`; `items.length === min(total, 500)` |
+| S5 | Tên shop trong danh sách mở | `items[].shop` từ getShops / `Shop ${id}` / bỏ khi id=0 | — | — | Bảng shop ghi đè `shop = s.shopName` (kể cả "Chưa xác định shop"); bảng tag dùng nguyên `shop` từ API |
+| S6 | Scope ↔ query param | `CompletedScope.kind` "tag"/"untagged"/"shop" | `tag` / `untagged=1` / `shopId` (đúng 1) | F1 build param | F4: untagged row → `{kind:"untagged"}` (KHÔNG gửi `tag=No Tag`); F5: shopId=0 hợp lệ |
+| S7 | Đọc ghim | `getPinnedTags(email)` → `string[]` | `GET /api/me/pinned-tags` → `{ pinnedTags }` | `usePinnedTags` · `["me","pinned-tags"]` | `data.pinnedTags` (không phải `data.tags`/`data.items`) |
+| S8 | Ghim/bỏ ghim | `setTagPinned` `$addToSet`/`$pull` | `PATCH /api/me/pinned-tags` body `{ tag, pinned }` → `{ pinnedTags }` | `useTogglePinnedTag` · mutationKey `["me","pinned-tags"]`, optimistic | Khoá = `t.tag` hoặc `UNTAGGED_PIN_KEY` ("__untagged__"); KHÔNG dùng `tagLabel(t.tag)` |
+| S9 | Sort | — | — | — | Ghim trước; trong nhóm `unread` desc; tag ghim vắng mặt trong kỳ → không có dòng |
+| S10 | Auth | — | 401 `{ error: "unauthenticated" }` cả 3 route mới/đổi | — | — |
+
+Điểm QA nên kiểm thêm: `has_replied` thiếu/null → tính là đã xong ở CẢ đếm lẫn danh sách; hội thoại unread nhưng có tag `handled` → đã xong; filter `shopIds` kết hợp `shopId` ngoài tập → `total: 0, items: []`; rapid double-toggle 2 tag khác nhau → cả 2 được lưu.
