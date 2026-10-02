@@ -334,6 +334,8 @@ export interface ReceiptHistoryItem {
   isDigitalDelivery: boolean;
   totalQty: number;
   transactions: ReceiptTransaction[];
+  /** Đơn được nhân viên gắn tay với hội thoại ở Mera Fulfill (không có trong receipt_history). */
+  linkedFromMera?: boolean;
 }
 
 /** Phản hồi chi tiết hội thoại cho sidebar phải (receipt_history + store để map sheet). */

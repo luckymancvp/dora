@@ -13,6 +13,7 @@ import { publicTrackingUrl } from "@/lib/services/tracking-url";
  *
  * Join: conversation.etsy.other_user.user_id  ⇄  etsy_orders.data.buyer_id
  * (fallback data.buyer.buyer_id) — cùng khóa với order-conversation.ts.
+ * Cộng thêm đơn nhân viên gắn tay với hội thoại ở Mera Fulfill (lib/services/mera-links.ts).
  */
 
 /** Số đơn gần nhất đưa vào prompt (giới hạn để tiết kiệm token). */
@@ -32,12 +33,17 @@ function fmtDate(unixSec: number): string {
  */
 export async function getOrderContextForConversation(
   buyerId: number,
+  /** Receipt của đơn được gắn tay với hội thoại ở Mera Fulfill (khách nhắn bằng tài khoản khác). */
+  linkedReceiptIds: number[] = [],
 ): Promise<OrderListItem[]> {
-  if (!buyerId || buyerId <= 0) return [];
+  const or: Record<string, unknown>[] = [];
+  if (buyerId > 0) or.push({ "data.buyer_id": buyerId }, { "data.buyer.buyer_id": buyerId });
+  if (linkedReceiptIds.length) or.push({ "data.order_id": { $in: linkedReceiptIds } });
+  if (or.length === 0) return [];
   try {
     const coll = await getEtsyOrdersCollection();
     const docs = (await coll
-      .find({ $or: [{ "data.buyer_id": buyerId }, { "data.buyer.buyer_id": buyerId }] })
+      .find({ $or: or })
       .sort({ "data.order_date": -1, _id: -1 })
       .limit(MAX_ORDERS_FOR_PROMPT)
       .toArray()) as WithId<EtsyOrderDoc>[];

@@ -45,6 +45,14 @@ function ReceiptCard({ r }: { r: ReceiptHistoryItem }) {
                   #{r.receiptId}
                 </p>
               ) : null}
+              {r.linkedFromMera ? (
+                <span
+                  title="Đơn được gắn tay với hội thoại này ở Mera Fulfill (khách nhắn bằng tài khoản khác)"
+                  className="mt-0.5 inline-block rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                >
+                  Gắn từ Mera
+                </span>
+              ) : null}
             </div>
             <span className="shrink-0 text-sm font-bold text-foreground">{r.value || "—"}</span>
           </div>

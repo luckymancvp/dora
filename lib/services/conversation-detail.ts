@@ -5,6 +5,7 @@ import {
   getPersonalizationFilesCollection,
 } from "@/lib/db/collections";
 import { mapOrder } from "@/lib/services/orders-read";
+import { getMeraLinkedReceiptIds } from "@/lib/services/mera-links";
 import type {
   ConversationDoc,
   ConversationDetailResponse,
@@ -112,6 +113,66 @@ function fmtReceiptDate(unixSec: number): string {
  * order-conversation.ts / ai/order-context.ts — rồi map về shape ReceiptHistoryItem
  * (receipt_id của Etsy chính là order_id nên personalization_files vẫn gắn đúng).
  */
+/** 1 doc etsy_orders → 1 dòng receipt cho sidebar (dùng chung cho fallback guest + đơn gắn từ Mera). */
+function receiptFromOrderDoc(d: WithId<EtsyOrderDoc>): ReceiptHistoryItem {
+  // shopName không cần cho sidebar → map rỗng (giống order-context).
+  const o = mapOrder(d, new Map<number, string>());
+  return {
+    receiptId: o.orderId,
+    date: fmtReceiptDate(o.orderDate),
+    value: o.total,
+    state: o.stateName,
+    isShipped: o.shipping.wasShipped,
+    // Payload order không có cờ digital delivery → mặc định false (chỉ ảnh hưởng badge).
+    isDigitalDelivery: false,
+    totalQty: o.transactions.reduce((s, t) => s + (t.quantity || 0), 0),
+    transactions: o.transactions.map((t) => ({
+      transactionId: t.transactionId,
+      title: t.title,
+      image: t.image,
+      quantity: t.quantity,
+      // Order payload không có giá từng transaction → "" (UI hiện "—").
+      value: "",
+      personalizationFiles: [],
+    })),
+  };
+}
+
+/**
+ * Đơn được gắn tay với hội thoại ở Mera Fulfill (khách mua guest rồi nhắn bằng tài khoản khác).
+ * Chỉ thêm receipt CHƯA có trong danh sách; đánh dấu linkedFromMera để sidebar hiện nhãn.
+ */
+async function receiptsLinkedFromMera(
+  conversationId: number,
+  existing: ReceiptHistoryItem[],
+): Promise<ReceiptHistoryItem[]> {
+  const linked = await getMeraLinkedReceiptIds(conversationId);
+  const have = new Set(existing.map((r) => r.receiptId));
+  const missing = linked.filter((id) => !have.has(id));
+  if (missing.length === 0) return [];
+  try {
+    const coll = await getEtsyOrdersCollection();
+    const docs = (await coll
+      .find({ "data.order_id": { $in: missing } })
+      .sort({ "data.order_date": -1, _id: -1 })
+      .toArray()) as WithId<EtsyOrderDoc>[];
+    const found = docs.map((d) => ({ ...receiptFromOrderDoc(d), linkedFromMera: true }));
+    // Đơn đã gắn ở Mera nhưng etsy_orders chưa có (extension chưa fetch) ⇒ vẫn hiện số đơn.
+    const foundIds = new Set(found.map((r) => r.receiptId));
+    for (const id of missing) {
+      if (foundIds.has(id)) continue;
+      found.push({
+        receiptId: id, date: "", value: "", state: "", isShipped: false,
+        isDigitalDelivery: false, totalQty: 0, transactions: [], linkedFromMera: true,
+      });
+    }
+    return found;
+  } catch (err) {
+    console.error("[conversation-detail] receiptsLinkedFromMera failed:", err);
+    return [];
+  }
+}
+
 async function receiptHistoryFromOrders(buyerId: number): Promise<ReceiptHistoryItem[]> {
   if (!buyerId || buyerId <= 0) return [];
   try {
@@ -122,29 +183,7 @@ async function receiptHistoryFromOrders(buyerId: number): Promise<ReceiptHistory
       .limit(FALLBACK_ORDERS_LIMIT)
       .toArray()) as WithId<EtsyOrderDoc>[];
 
-    // shopName không cần cho sidebar → map rỗng (giống order-context).
-    return docs.map((d) => {
-      const o = mapOrder(d, new Map<number, string>());
-      return {
-        receiptId: o.orderId,
-        date: fmtReceiptDate(o.orderDate),
-        value: o.total,
-        state: o.stateName,
-        isShipped: o.shipping.wasShipped,
-        // Payload order không có cờ digital delivery → mặc định false (chỉ ảnh hưởng badge).
-        isDigitalDelivery: false,
-        totalQty: o.transactions.reduce((s, t) => s + (t.quantity || 0), 0),
-        transactions: o.transactions.map((t) => ({
-          transactionId: t.transactionId,
-          title: t.title,
-          image: t.image,
-          quantity: t.quantity,
-          // Order payload không có giá từng transaction → "" (UI hiện "—").
-          value: "",
-          personalizationFiles: [],
-        })),
-      };
-    });
+    return docs.map(receiptFromOrderDoc);
   } catch (err) {
     // Fallback hỏng thì sidebar chỉ trống như cũ — không chặn phần còn lại của trang.
     console.error("[conversation-detail] receiptHistoryFromOrders failed:", err);
@@ -170,6 +209,12 @@ export async function getConversationReceiptHistory(
   if (receiptHistory.length === 0 && doc) {
     const buyerId = asNumber(getPath(doc.etsy, "other_user.user_id")) ?? 0;
     receiptHistory = await receiptHistoryFromOrders(buyerId);
+  }
+
+  // Đơn nhân viên gắn tay với hội thoại này ở Mera Fulfill — đứng đầu danh sách.
+  if (doc) {
+    const linked = await receiptsLinkedFromMera(conversationId, receiptHistory);
+    if (linked.length) receiptHistory = [...linked, ...receiptHistory];
   }
 
   await attachPersonalizationFiles(receiptHistory);

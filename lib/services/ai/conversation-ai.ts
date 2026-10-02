@@ -13,6 +13,7 @@ import {
   getOrderContextForConversation,
   formatOrdersForPrompt,
 } from "@/lib/services/ai/order-context";
+import { getMeraLinkedReceiptIds } from "@/lib/services/mera-links";
 import { formatKnowledgeBaseForPrompt } from "@/lib/services/ai/knowledge-base";
 import { getExamplesBlockForConversation } from "@/lib/services/ai/reply-examples";
 
@@ -83,7 +84,10 @@ export async function createAIResponse(
   // Hai nguồn độc lập → chạy song song (examples còn gọi API embedding, tuần tự
   // từng cộng thẳng vào thời gian chờ của user).
   const [orders, examplesBlock] = await Promise.all([
-    getOrderContextForConversation(customerId),
+    // + đơn gắn tay ở Mera (khách mua guest rồi nhắn bằng tài khoản khác).
+    getMeraLinkedReceiptIds(conversationId).then((linked) =>
+      getOrderContextForConversation(customerId, linked),
+    ),
     getExamplesBlockForConversation(shopUserId, items),
   ]);
   const factsBlock = [
