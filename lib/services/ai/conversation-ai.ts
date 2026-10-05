@@ -18,6 +18,8 @@ import { formatKnowledgeBaseForPrompt } from "@/lib/services/ai/knowledge-base";
 import { getExamplesBlockForConversation } from "@/lib/services/ai/reply-examples";
 
 const AI_TAGS = new Set<string>(CONVERSATION_TAGS);
+// TẠM TẮT tự gắn AI tag — bật lại bằng cách đổi thành true.
+const AI_AUTO_TAG_ENABLED = false;
 
 /**
  * Port của dora-backend conversation_service.CreateAIResponse.
@@ -109,7 +111,9 @@ export async function createAIResponse(
   );
 
   // Auto tag (mirror DORA): có tag → giữ đúng 1 AI tag; không → bỏ hết AI tag.
-  if (result.suggested_tag && AI_TAGS.has(result.suggested_tag)) {
+  if (!AI_AUTO_TAG_ENABLED) {
+    // Tạm tắt: không tự thêm/gỡ AI tag.
+  } else if (result.suggested_tag && AI_TAGS.has(result.suggested_tag)) {
     await convColl.updateOne(
       { "etsy.conversation_id": conversationId },
       { $pull: { tags: { $in: [...AI_TAGS] } } },
