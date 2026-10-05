@@ -7,7 +7,7 @@ import { findDoraUserEmail } from "@/lib/services/dora-user";
 import { actorNotDoraUser, hasMachineApiKey } from "@/lib/http/machine-auth";
 
 // POST /api/orders/message — nhắn khách theo đơn (tạo hội thoại mới nếu chưa có).
-// body: { shopName, orderId, message, attachments? }. Trạng thái thật do extension báo về
+// body: { shopName, orderId, message, attachments? } — message được rỗng nếu có attachments. Trạng thái thật do extension báo về
 // /v1/extension/order-messages/status/:id; UI poll GET /api/orders/message/status/:id.
 // attachments: mảng public URL ảnh (Vercel Blob) — extension tự upload2Etsy để đổi thành image_id.
 // Auth: session Google (UI) HOẶC header x-api-key khớp MERA_INTERNAL_API_KEY (máy: Apps Script).
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     const shopName = (body.shopName ?? "").trim();
     const orderId = String(body.orderId ?? "").trim();
     const message = (body.message ?? "").trim();
-    if (!shopName || !orderId || !message) {
+    if (!shopName || !orderId) {
       return NextResponse.json(
         { error: "shopName, orderId và message bắt buộc" },
         { status: 400 },
@@ -51,6 +51,17 @@ export async function POST(req: NextRequest) {
       .filter((x) => x.startsWith("http://") || x.startsWith("https://"));
     if (attachments.length > 10) {
       return NextResponse.json({ error: "Tối đa 10 ảnh mỗi tin" }, { status: 400 });
+    }
+    // message rỗng CHỈ hợp lệ khi có ảnh: tin chỉ-ảnh nối tiếp vào hội thoại đã có. Etsy giữ
+    // tối đa 3 ảnh mỗi tin (thừa thì bỏ im lặng, extension vẫn báo DONE), nên Mera Send Mockup
+    // tách đơn nhiều ảnh thành nhiều job: job đầu text + ≤3 ảnh, các job sau message "" + ảnh,
+    // gửi tuần tự sau khi job trước DONE. Caller tự bảo đảm đơn ĐÃ có hội thoại — đơn chưa có
+    // thì extension sẽ tạo hội thoại bằng text rỗng.
+    if (!message && attachments.length === 0) {
+      return NextResponse.json(
+        { error: "shopName, orderId và message bắt buộc" },
+        { status: 400 },
+      );
     }
 
     if (viaApiKey) {
