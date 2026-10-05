@@ -180,7 +180,8 @@ export async function publishFetchOrders(
  * `attachments` là mảng public URL (Vercel Blob), KHÔNG phải Etsy image_id: extension mới
  * là bên gọi upload2Etsy(convo_id, url) để đổi URL → image_id rồi sendMessage kèm image_ids.
  * Đơn chưa có hội thoại thì extension làm 2 bước: tạo hội thoại bằng text trước để có
- * convo_id, gửi ảnh sau → vì vậy `message` vẫn bắt buộc non-empty ở phía route.
+ * convo_id, gửi ảnh sau → vì vậy `message` bắt buộc non-empty khi không có ảnh; message rỗng
+ * + ảnh chỉ dành cho tin nối tiếp vào hội thoại đã có (Mera Send Mockup tách ≤3 ảnh/tin).
  * Trạng thái báo về Go backend (KHÔNG về app này) → fire-and-forget.
  * Trả clientId được nhắm tới, hoặc null nếu shop không có browser online.
  */
