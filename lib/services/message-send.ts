@@ -2,7 +2,7 @@ import { ObjectId } from "mongodb";
 import { getConversationsCollection, getMessagesCollection } from "@/lib/db/collections";
 import type { ConversationDoc, EtsyRaw, MessageDoc, MessageStatus } from "@/lib/types/etsy";
 import { asNumber, firstNumber, firstString } from "@/lib/services/etsy-utils";
-import { publishChatMessage, publishNewMessages } from "@/lib/services/ably-publish";
+import { publishChatMessage, publishNewMessages, type TargetPick } from "@/lib/services/ably-publish";
 import { resolveShopNameByUserId } from "@/lib/services/shop-read";
 import { captureSentReply } from "@/lib/services/ai/learning";
 
@@ -12,11 +12,15 @@ export interface CreatedMessage {
   status: MessageStatus;
   /** Chỉ có khi FAILED — vì sao không đẩy được tới extension. */
   reason?: "shop-unknown" | "no-browser";
+  /** Browser extension được đẩy tin + caps ([] = extension cũ) — chỉ có khi đẩy được. */
+  targetClientId?: string;
+  targetCaps?: string[];
 }
 
 /**
  * Tạo tin nhắn đi (mirror DORA web MessageService.CreateMessage):
- * insert doc status NEW + etsy temp, rồi push Ably "chat-message" tới 1 browser extension.
+ * insert doc status NEW + etsy temp, rồi push Ably "chat-message" tới 1 browser extension
+ * (ưu tiên cap claim_v2) và ghi target_* lên doc trước khi trả về.
  * Không có browser online → đánh FAILED.
  */
 export async function createOutgoingMessage(
@@ -76,7 +80,7 @@ export async function createOutgoingMessage(
   }).catch((e) => console.error("[send] captureSentReply:", (e as Error)?.message));
 
   // Đẩy tới extension. Không có browser → FAILED.
-  let targeted: string | null = null;
+  let targeted: TargetPick | null = null;
   try {
     targeted = await publishChatMessage(shopName, {
       conversation_id: conversationId,
@@ -95,7 +99,22 @@ export async function createOutgoingMessage(
     return { id: _id.toHexString(), conversationId, status: "FAILED", reason };
   }
 
-  return { id: _id.toHexString(), conversationId, status: "NEW" };
+  // Ghi browser được đẩy + caps: Mera đọc target_caps để biết tin còn NEW có huỷ an toàn được không.
+  // Chỉ $set 2 field này (không đụng status) nên extension claim trước đó cũng không sao.
+  await msgColl
+    .updateOne(
+      { _id },
+      { $set: { target_client_id: targeted.clientId, target_caps: targeted.caps } },
+    )
+    .catch((e) => console.warn("[send] set target failed:", (e as Error)?.message));
+
+  return {
+    id: _id.toHexString(),
+    conversationId,
+    status: "NEW",
+    targetClientId: targeted.clientId,
+    targetCaps: targeted.caps,
+  };
 }
 
 export async function getMessageStatus(id: string): Promise<MessageDoc | null> {

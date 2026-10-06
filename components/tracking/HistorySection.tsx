@@ -394,8 +394,9 @@ function ResultCell({ order: o }: { order: TrackingJobOrder }) {
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
           {/* Không dùng VERIFY_LABEL.SKIPPED ("Bỏ qua"): đơn này ĐÃ add lên Etsy, chỉ là
-              không verify được. Gọi là "bỏ qua" sẽ bị hiểu nhầm thành chưa add. */}
-          Đã add nhưng CHƯA xác minh được
+              không verify được. Gọi là "bỏ qua" sẽ bị hiểu nhầm thành chưa add. Đơn
+              `unreported` (extension dừng lô trước khi báo) thì CHƯA biết đã add hay chưa. */}
+          {o.unreported ? "CHƯA xác nhận đã tới Etsy" : "Đã add nhưng CHƯA xác minh được"}
           {o.message && <span className="block text-xs text-muted-foreground">{o.message}</span>}
         </span>
       </span>

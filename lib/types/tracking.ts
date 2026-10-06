@@ -128,6 +128,14 @@ export interface TrackingJobOrder {
   verified?: TrackingValue;
   /** Câu giải thích tiếng Việt cho người vận hành (nêu rõ giá trị gửi vs Etsy trả). */
   message?: string;
+  /**
+   * Extension dừng lô giữa chừng (FAILED kèm `tracking.results`, vd watchdog "stalled: …")
+   * TRƯỚC khi báo đơn này — giá trị = lỗi extension báo. Có field này = CHƯA BIẾT đơn đã tới
+   * Etsy hay chưa: verify thấy đúng mã → VERIFIED/CARRIER_MISMATCH như thường; không thấy →
+   * verify SKIPPED + message "chưa xác nhận" (KHÔNG phải NOT_FOUND/FAILED — có thể chưa gửi,
+   * cũng có thể vẫn đang tới Etsy).
+   */
+  unreported?: string;
 }
 
 export interface TrackingJob {
