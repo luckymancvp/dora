@@ -7,8 +7,12 @@ import type { PresetKey } from "@/lib/dashboard/date-presets";
  */
 export type EtsyRaw = Record<string, unknown>;
 
-/** Trạng thái gửi message — mirror models/message.go (MessageStatus). */
-export type MessageStatus = "NEW" | "SENDING" | "DONE" | "FAILED";
+/**
+ * Trạng thái gửi message — mirror models/message.go (MessageStatus).
+ * CANCELLED: Mera huỷ tin còn NEW (route huỷ CAS) — với extension có cap `claim_v2` nghĩa là
+ * chắc chắn chưa gửi Etsy.
+ */
+export type MessageStatus = "NEW" | "SENDING" | "DONE" | "FAILED" | "CANCELLED";
 
 /**
  * Collection `conversations` — key upsert: etsy.conversation_id
@@ -70,6 +74,10 @@ export interface MessageDoc {
   attachments: string[];
   sender_email: string;
   status: MessageStatus | "";
+  /** Browser extension được đẩy tin (presence lúc publish) — Mera đọc target_caps để biết có huỷ an toàn không. */
+  target_client_id?: string;
+  /** Cap của extension đó; [] = extension cũ (claim lỗi vẫn có thể gửi). */
+  target_caps?: string[];
   created_at: Date;
   updated_at: Date;
 }
@@ -123,6 +131,20 @@ export interface OrderMessageDoc {
   convo_id?: number;
   /** Lý do thất bại do extension báo về. */
   error?: string;
+  /** id tin đứng trước cùng đơn (Mera tách nhiều lô): lô trước hỏng/huỷ thì extension không gửi lô này. */
+  after_id?: string;
+  /** Browser extension được đẩy tin + cap của nó ([] = extension cũ). Ghi ngay sau publish. */
+  target_client_id?: string;
+  target_caps?: string[];
+  /** Claim NEW→SENDING của extension (claimed_by = client_id trong body claim). */
+  claimed_at?: Date;
+  claimed_by?: string;
+  /** Mera huỷ khi còn NEW (POST /api/machine/order-messages/:id/cancel). */
+  cancelled_at?: Date;
+  cancelled_by?: string;
+  /** Trạng thái ngay trước DONE; late_done = DONE tới sau FAILED/CANCELLED (đã gửi Etsy thật). */
+  done_from?: MessageStatus;
+  late_done?: boolean;
   created_at: Date;
   updated_at: Date;
 }

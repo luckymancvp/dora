@@ -203,7 +203,7 @@ export function MessageBuyerDialog({
   const removeAttachment = (url: string) =>
     setAttachments((prev) => prev.filter((u) => u !== url));
 
-  /** Poll trạng thái tới khi extension chốt DONE/FAILED; null nếu hết giờ. */
+  /** Poll trạng thái tới khi chốt DONE/FAILED/CANCELLED; null nếu hết giờ. */
   const waitSendResult = async (
     id: string,
   ): Promise<{ status: string; error: string } | null> => {
@@ -214,7 +214,8 @@ export function MessageBuyerDialog({
         const r = await fetch(`/api/orders/message/status/${id}`);
         if (!r.ok) continue;
         const d = (await r.json()) as { status?: string; error?: string };
-        if (d.status === "DONE" || d.status === "FAILED") {
+        // CANCELLED: Mera huỷ tin còn NEW — trạng thái cuối, chắc chắn chưa gửi.
+        if (d.status === "DONE" || d.status === "FAILED" || d.status === "CANCELLED") {
           return { status: d.status, error: d.error ?? "" };
         }
       } catch {
@@ -256,6 +257,10 @@ export function MessageBuyerDialog({
       if (sent?.status === "FAILED") {
         // Giữ nguyên nội dung + ảnh để gửi lại, không đóng panel.
         toast.error(`Gửi thất bại: ${sent.error || "extension báo lỗi"}`);
+        return;
+      }
+      if (sent?.status === "CANCELLED") {
+        toast.error("Tin đã bị huỷ trước khi gửi — khách chưa nhận được, có thể gửi lại.");
         return;
       }
       if (!sent || sent.status !== "DONE") {

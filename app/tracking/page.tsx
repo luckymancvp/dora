@@ -1060,8 +1060,9 @@ function OrderStatusCell({ order: o, phase }: { order: TrackingJobOrder; phase: 
           {/* KHÔNG dùng VERIFY_LABEL.SKIPPED ("Bỏ qua") ở đây: state SKIPPED gánh 2 tình
               huống khác hẳn nhau — đơn không được chọn (đúng là bỏ qua) và đơn ĐÃ add
               nhưng verify không chạy được. Gọi ca này là "bỏ qua" sẽ khiến người vận hành
-              tưởng chưa add, trong khi tracking đã lên Etsy rồi. */}
-          Đã add nhưng CHƯA xác minh được
+              tưởng chưa add, trong khi tracking đã lên Etsy rồi. Đơn `unreported` (extension
+              dừng lô trước khi báo) thì CHƯA biết đã add hay chưa → không được nói "Đã add". */}
+          {o.unreported ? "CHƯA xác nhận đã tới Etsy" : "Đã add nhưng CHƯA xác minh được"}
           {o.message && <span className="block text-xs text-muted-foreground">{o.message}</span>}
         </span>
       </span>

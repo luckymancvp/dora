@@ -361,6 +361,50 @@ function classifyVerify(o: TrackingJobOrder, list: ShipmentResultItem[]): Verify
   return { verify: "VERIFIED", verified };
 }
 
+/** Câu "chưa xác nhận" cho đơn extension dừng lô trước khi kịp báo (`o.unreported`). */
+function unreportedMessage(o: TrackingJobOrder, detail: string): string {
+  const why = o.unreported && o.unreported !== "FAILED" ? ` (${o.unreported})` : "";
+  return `Chưa xác nhận — extension dừng lô${why} trước khi báo đơn này; ${detail}. Có thể chưa gửi, cũng có thể vẫn đang tới Etsy — kiểm tra trên Etsy trước khi gửi lại`;
+}
+
+/**
+ * Không verify được (shop offline / GET shipments lỗi): đơn đã add đang chờ verify → SKIPPED.
+ * Đơn `unreported` (extension không kịp báo) nói rõ là CHƯA BIẾT đã tới Etsy hay chưa.
+ */
+function markVerifySkipped(orders: TrackingJobOrder[], addedMessage: string, unreportedDetail: string): void {
+  for (const o of orders) {
+    if (o.add_status === "DONE" && o.verify === "PENDING") {
+      o.verify = "SKIPPED";
+      o.message = o.unreported ? unreportedMessage(o, unreportedDetail) : addedMessage;
+    }
+  }
+}
+
+/** 1 dòng `tracking.results` của extension (cộng dồn, theo thứ tự đã làm). */
+interface ExtensionOrderResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * `tracking.results` trong callback → order_id → kết quả. null = callback KHÔNG kèm mảng
+ * results (extension cũ, hoặc lỗi trước đơn đầu tiên) → giữ cách xử lý cũ.
+ */
+function parseTrackingResults(tracking: unknown): Map<string, ExtensionOrderResult> | null {
+  if (!tracking || typeof tracking !== "object") return null;
+  const results = (tracking as { results?: unknown }).results;
+  if (!Array.isArray(results)) return null;
+  const map = new Map<string, ExtensionOrderResult>();
+  for (const r of results) {
+    if (!r || typeof r !== "object") continue;
+    const row = r as { order_id?: unknown; ok?: unknown; error?: unknown };
+    const id = String(row.order_id ?? "").trim();
+    if (!id) continue;
+    map.set(id, row.ok === true ? { ok: true } : { ok: false, error: String(row.error ?? "").trim() || "unknown error" });
+  }
+  return map;
+}
+
 /**
  * Xử lý kết quả GET shipments từ extension cho cả 2 phase:
  * - PRECHECK: đánh dấu mỗi đơn CLEAR (chưa có tracking) / EXISTS (đã có) → AWAIT_CONFIRM.
@@ -389,12 +433,7 @@ export async function applyShipmentsResult(
     }
     if (job.phase === "VERIFY") {
       // Đã add rồi nhưng không verify được → đánh dấu SKIPPED, không coi là MISMATCH.
-      for (const o of job.orders) {
-        if (o.add_status === "DONE" && o.verify === "PENDING") {
-          o.verify = "SKIPPED";
-          o.message = "Đã add nhưng không verify được: " + error;
-        }
-      }
+      markVerifySkipped(job.orders, "Đã add nhưng không verify được: " + error, "không đọc lại được Etsy: " + error);
       await coll.updateOne(
         { _id: job._id },
         { $set: { orders: job.orders, phase: "COMPLETED", error, updated_at: new Date() } },
@@ -431,6 +470,21 @@ export async function applyShipmentsResult(
         continue;
       }
       const outcome = classifyVerify(o, map.get(o.order_id) ?? []);
+      // So thẳng 2 giá trị (= isVerifyAdded): import thêm hàm mới từ @/lib/types/tracking vỡ
+      // dưới webpack vì file biên dịch cũ lib/types/tracking.js (có trong git) được resolve trước .ts.
+      const added = outcome.verify === "VERIFIED" || outcome.verify === "CARRIER_MISMATCH";
+      if (o.unreported && !added) {
+        // Extension dừng lô trước khi báo đơn này: Etsy chưa có mã ≠ add hỏng (có thể chưa
+        // gửi, có thể vẫn đang tới) → "chưa xác nhận", không phải NOT_FOUND/CODE_MISMATCH.
+        o.verify = "SKIPPED";
+        o.message = unreportedMessage(
+          o,
+          outcome.verified ? `Etsy chưa có mã này (đang có ${outcome.verified.code})` : "Etsy chưa có mã này",
+        );
+        if (outcome.verified) o.verified = outcome.verified;
+        else delete o.verified;
+        continue;
+      }
       o.verify = outcome.verify;
       // Ghi đè/xoá hẳn message + verified cũ: verify có thể chạy lại (extension gửi
       // kết quả lần 2), để sót dữ liệu lần trước là nói dối người vận hành.
@@ -492,13 +546,69 @@ export async function confirmAdd(id: string, orderIds: string[]): Promise<Serial
   return serializeJob(job);
 }
 
+/** Kết quả applyStatus — route trả nguyên (200). */
+export interface ApplyStatusResult {
+  ok: boolean;
+  /** Callback trùng/muộn cho job đã qua bước add (VERIFY/COMPLETED): bỏ qua, không đổi dữ liệu. */
+  already?: boolean;
+  /** Phase hiện tại của job khi already. */
+  phase?: TrackingJob["phase"];
+}
+
+// Phase còn nhận callback add. AWAIT_CONFIRM: confirmAdd publish send-tracking TRƯỚC khi lưu
+// ADDING, callback nhanh có thể tới khi DB còn AWAIT_CONFIRM (giữ như cũ).
+const ADD_CALLBACK_PHASES: TrackingJob["phase"][] = ["AWAIT_CONFIRM", "ADDING"];
+
+/** Phần body callback ngoài `status` mà applyStatus đọc. */
+export interface ApplyStatusExtra {
+  /** `{total, done, sent, failed, results: [{order_id, ok, error?}]}` — cộng dồn. */
+  tracking?: unknown;
+  /** Lỗi extension báo kèm FAILED (vd "stalled: no order finished in 120s"). */
+  error?: unknown;
+}
+
 /**
  * Extension báo trạng thái add (cả batch): SENDING / DONE / FAILED.
  * DONE → chuyển VERIFY + publish fetch-shipments lần 2 để xác minh.
+ *
+ * FAILED kèm `tracking.results` (extension 2026-10-06: watchdog "stalled: …" hoặc lỗi giữa
+ * chừng — đơn đang dở có thể ĐÃ tới Etsy): xét TỪNG ĐƠN theo results — `ok:true` → như DONE
+ * (đi verify); `ok:false` → FAILED; KHÔNG có trong results → KHÔNG đánh FAILED, đi verify với
+ * cờ `unreported` (Etsy có mã → VERIFIED; không → SKIPPED "chưa xác nhận"). FAILED không kèm
+ * results (extension cũ / lỗi trước đơn đầu) → cả lô FAILED như cũ.
+ *
+ * Idempotent: extension mới có outbox nên DONE/FAILED có thể tới LẠI (lần đầu đã tới nhưng
+ * nhận 5xx/mất mạng), kể cả song song với lần đầu. Job đã rời AWAIT_CONFIRM/ADDING → trả
+ * {ok:true, already:true}, không đổi gì (trước đây DONE lặp đánh verify=SKIPPED cho đơn đang
+ * chờ verify, SENDING muộn kéo phase về ADDING). Mọi ghi đều CAS theo phase để 2 request đua
+ * nhau chỉ 1 cái áp dụng. QUEUED/PROGRESS/CANCELLED (extension chỉ gửi Mera) → {ok:false}.
  */
-export async function applyStatus(id: string, status: string): Promise<boolean> {
+export async function applyStatus(id: string, status: string, extra: ApplyStatusExtra = {}): Promise<ApplyStatusResult> {
   const job = await getJobDoc(id);
-  if (!job) return false;
+  if (!job) return { ok: false };
+
+  const known = status === "SENDING" || status === "DONE" || status === "FAILED" || status === "CANCELLED";
+  if (known && (job.phase === "VERIFY" || job.phase === "COMPLETED")) {
+    return { ok: true, already: true, phase: job.phase };
+  }
+  // CANCELLED chưa hỗ trợ ở dora-1 (không có lệnh huỷ), PRECHECK chưa add gì → không đụng.
+  if (!known || status === "CANCELLED" || !ADD_CALLBACK_PHASES.includes(job.phase)) {
+    return { ok: false };
+  }
+
+  const coll = await getTrackingJobsCollection();
+  // CAS theo phase: chỉ ghi khi job vẫn đang ở bước add. Trượt = request khác đã chuyển phase.
+  const casSave = async (orders: TrackingJobOrder[], phase: TrackingJob["phase"]): Promise<boolean> => {
+    const res = await coll.updateOne(
+      { _id: job._id, phase: { $in: ADD_CALLBACK_PHASES } },
+      { $set: { orders, phase, updated_at: new Date() } },
+    );
+    return res.matchedCount > 0;
+  };
+  const alreadyNow = async (): Promise<ApplyStatusResult> => {
+    const cur = await coll.findOne({ _id: job._id }, { projection: { phase: 1 } });
+    return { ok: true, already: true, phase: cur?.phase };
+  };
 
   const isAddingOrder = (o: TrackingJobOrder) => o.selected && (o.add_status === "NEW" || o.add_status === "SENDING");
 
@@ -506,56 +616,80 @@ export async function applyStatus(id: string, status: string): Promise<boolean> 
     for (const o of job.orders) {
       if (o.selected && o.add_status === "NEW") o.add_status = "SENDING";
     }
-    await saveOrders(job._id, job.orders, "ADDING");
-    return true;
+    return (await casSave(job.orders, "ADDING")) ? { ok: true } : alreadyNow();
   }
+
+  const verifyIds: string[] = [];
 
   if (status === "FAILED") {
+    const results = parseTrackingResults(extra.tracking);
+    if (!results) {
+      // Không có results: extension hỏng trước khi đụng Etsy → cả lô thất bại (như cũ).
+      for (const o of job.orders) {
+        if (isAddingOrder(o)) {
+          o.add_status = "FAILED";
+          o.verify = "SKIPPED";
+          o.message = "Extension báo add thất bại";
+        }
+      }
+      return (await casSave(job.orders, "COMPLETED")) ? { ok: true } : alreadyNow();
+    }
+    const why = typeof extra.error === "string" && extra.error.trim() ? extra.error.trim() : "FAILED";
     for (const o of job.orders) {
-      if (isAddingOrder(o)) {
+      if (!isAddingOrder(o)) continue;
+      const r = results.get(o.order_id);
+      if (r && !r.ok) {
         o.add_status = "FAILED";
         o.verify = "SKIPPED";
-        o.message = "Extension báo add thất bại";
+        o.message = `Extension báo add thất bại: ${r.error}`;
+        continue;
       }
+      // ok:true → như DONE; không có trong results → chưa biết, đọc lại Etsy mới kết luận.
+      o.add_status = "DONE";
+      if (!r) o.unreported = why;
+      verifyIds.push(o.order_id);
     }
-    await saveOrders(job._id, job.orders, "COMPLETED");
-    return true;
-  }
-
-  if (status === "DONE") {
-    const verifyIds: string[] = [];
+  } else {
+    // DONE
     for (const o of job.orders) {
       if (isAddingOrder(o)) {
         o.add_status = "DONE";
         verifyIds.push(o.order_id);
       }
     }
-
-    // Publish fetch-shipments lần 2 để verify. Nếu shop offline → bỏ verify, coi như xong.
-    const clientId = verifyIds.length
-      ? await publishFetchShipments(job.shop_name, {
-          id: job._id.toHexString(),
-          shopId: job.shop_id,
-          orderIds: verifyIds,
-        })
-      : null;
-
-    if (!clientId) {
-      for (const o of job.orders) {
-        if (o.add_status === "DONE" && o.verify === "PENDING") {
-          o.verify = "SKIPPED";
-          o.message = "Đã add nhưng không verify được (shop offline)";
-        }
-      }
-      await saveOrders(job._id, job.orders, "COMPLETED");
-      return true;
-    }
-
-    await saveOrders(job._id, job.orders, "VERIFY");
-    const coll = await getTrackingJobsCollection();
-    await coll.updateOne({ _id: job._id }, { $set: { client_id: clientId } });
-    return true;
   }
 
-  return false;
+  if (!verifyIds.length) {
+    // Không còn đơn nào để verify (như cũ: coi như xong).
+    markVerifySkipped(job.orders, "Đã add nhưng không verify được (shop offline)", "không đọc lại được Etsy (shop offline)");
+    return (await casSave(job.orders, "COMPLETED")) ? { ok: true } : alreadyNow();
+  }
+  // Chốt VERIFY TRƯỚC khi publish fetch-shipments: (1) DONE lặp/đua thua CAS → không publish
+  // verify lần 2; (2) kết quả shipments về nhanh vẫn thấy phase VERIFY (trước đây publish rồi
+  // mới lưu VERIFY → kết quả tới sớm bị bỏ, job kẹt VERIFY).
+  if (!(await casSave(job.orders, "VERIFY"))) return alreadyNow();
+
+  // Publish fetch-shipments lần 2 để verify. Nếu shop offline → bỏ verify, coi như xong.
+  let clientId: string | null = null;
+  try {
+    clientId = await publishFetchShipments(job.shop_name, {
+      id: job._id.toHexString(),
+      shopId: job.shop_id,
+      orderIds: verifyIds,
+    });
+  } catch (e) {
+    console.warn("[tracking] publish fetch-shipments (verify) failed:", (e as Error)?.message);
+  }
+
+  if (!clientId) {
+    markVerifySkipped(job.orders, "Đã add nhưng không verify được (shop offline)", "không đọc lại được Etsy (shop offline)");
+    await coll.updateOne(
+      { _id: job._id, phase: "VERIFY" },
+      { $set: { orders: job.orders, phase: "COMPLETED", updated_at: new Date() } },
+    );
+    return { ok: true };
+  }
+
+  await coll.updateOne({ _id: job._id }, { $set: { client_id: clientId } });
+  return { ok: true };
 }

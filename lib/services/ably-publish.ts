@@ -1,4 +1,5 @@
 import * as Ably from "ably";
+import { pickTargetMember, type TargetPick } from "@/lib/services/ably-target";
 
 // Channel/event khớp dora-backend: PushMessage("all", "new-message-event", ...)
 export const ABLY_CHANNEL = "all";
@@ -35,15 +36,25 @@ export const SEND_ORDER_MESSAGE_EVENT = "send-order-message";
 // Event yêu cầu extension GET hội thoại từ TRANG ĐƠN (thấy được cả khách guest/chưa trả lời).
 export const FETCH_ORDER_CONVO_EVENT = "fetch-order-convo";
 
+// Cap extension khai trong presence (hợp đồng C2C4 §1.1). claim_v2: claim NEW→SENDING bắt buộc
+// trước khi gửi Etsy; tracking_v2: send-tracking xếp hàng + PROGRESS/cancel.
+export const CAP_CLAIM_V2 = "claim_v2";
+export const CAP_TRACKING_V2 = "tracking_v2";
+
+export type { TargetPick };
+
 /**
- * Chọn 1 browser extension đang online trên channel của shop (presence) —
- * lấy client cuối để đảm bảo chỉ 1 client xử lý. Trả null nếu không có ai online.
+ * Chọn 1 browser extension đang online trên channel của shop (presence) để chỉ 1 client xử lý.
+ * requiredCap rỗng = client cuối như cũ; có cap → ưu tiên client cuối mang cap đó; preferClientId
+ * có mặt thì chọn luôn nó (luật ở ably-target.ts). Trả null nếu không có ai online.
  */
-async function pickTargetClient(channel: Ably.Channel): Promise<string | null> {
+async function pickTargetClient(
+  channel: Ably.Channel,
+  requiredCap = "",
+  preferClientId = "",
+): Promise<TargetPick | null> {
   const presence = await channel.presence.get();
-  const members = presence.items ?? [];
-  if (members.length === 0) return null;
-  return members[members.length - 1].clientId ?? null;
+  return pickTargetMember(presence.items ?? [], requiredCap, preferClientId);
 }
 
 /**
@@ -64,23 +75,23 @@ export async function publishNewMessages(conversationIds: number[]): Promise<voi
 }
 
 /**
- * Đẩy yêu cầu gửi tin tới 1 browser extension đang online (mirror DORA
- * PushMessageOnly1Browser): channel = shop_name, event "chat-message".
- * Trả về clientId được nhắm tới, hoặc null nếu không có browser nào online.
+ * Đẩy yêu cầu gửi tin tới 1 browser extension đang online (mirror DORA CreateMessage):
+ * channel = shop_name, event "chat-message", ưu tiên extension có cap claim_v2.
+ * Trả về client được nhắm tới + caps của nó, hoặc null nếu không có browser nào online.
  */
 export async function publishChatMessage(
   shopName: string,
   data: { conversation_id: number; message: { id: string; message: string; attachments: string[] } },
-): Promise<string | null> {
+): Promise<TargetPick | null> {
   const rest = getRest();
   if (!rest || !shopName) return null;
   const channel = rest.channels.get(shopName);
 
-  const targetClientId = await pickTargetClient(channel);
-  if (!targetClientId) return null;
+  const target = await pickTargetClient(channel, CAP_CLAIM_V2);
+  if (!target) return null;
 
-  await channel.publish(CHAT_MESSAGE_EVENT, { ...data, clientId: targetClientId });
-  return targetClientId;
+  await channel.publish(CHAT_MESSAGE_EVENT, { ...data, clientId: target.clientId });
+  return target;
 }
 
 /**
@@ -96,7 +107,7 @@ export async function publishFetchShipments(
   if (!rest || !shopName) return null;
   const channel = rest.channels.get(shopName);
 
-  const targetClientId = await pickTargetClient(channel);
+  const targetClientId = (await pickTargetClient(channel))?.clientId;
   if (!targetClientId) return null;
 
   await channel.publish(FETCH_SHIPMENTS_EVENT, { ...data, clientId: targetClientId });
@@ -115,6 +126,7 @@ export interface SendTrackingOrder {
 /**
  * Yêu cầu extension add tracking lên Etsy (event "send-tracking").
  * Extension báo trạng thái về POST /v1/extension/trackings/status/{id}.
+ * Ưu tiên extension có cap tracking_v2 (xếp hàng 1 lệnh/tab) như Mera admin.
  * Trả clientId được nhắm tới, hoặc null nếu shop không có browser online.
  */
 export async function publishSendTracking(
@@ -125,7 +137,7 @@ export async function publishSendTracking(
   if (!rest || !shopName) return null;
   const channel = rest.channels.get(shopName);
 
-  const targetClientId = await pickTargetClient(channel);
+  const targetClientId = (await pickTargetClient(channel, CAP_TRACKING_V2))?.clientId;
   if (!targetClientId) return null;
 
   await channel.publish(SEND_TRACKING_EVENT, { ...data, clientId: targetClientId });
@@ -145,7 +157,7 @@ export async function publishFetchPersonalization(
   if (!rest || !shopName) return null;
   const channel = rest.channels.get(shopName);
 
-  const targetClientId = await pickTargetClient(channel);
+  const targetClientId = (await pickTargetClient(channel))?.clientId;
   if (!targetClientId) return null;
 
   await channel.publish(FETCH_PERSONALIZATION_EVENT, { ...data, clientId: targetClientId });
@@ -166,7 +178,7 @@ export async function publishFetchOrders(
   if (!rest || !shopName) return null;
   const channel = rest.channels.get(shopName);
 
-  const targetClientId = await pickTargetClient(channel);
+  const targetClientId = (await pickTargetClient(channel))?.clientId;
   if (!targetClientId) return null;
 
   // Extension handler "fetch-orders" KHÔNG lọc theo clientId; vẫn gửi để biết shop online.
@@ -182,23 +194,27 @@ export async function publishFetchOrders(
  * Đơn chưa có hội thoại thì extension làm 2 bước: tạo hội thoại bằng text trước để có
  * convo_id, gửi ảnh sau → vì vậy `message` bắt buộc non-empty khi không có ảnh; message rỗng
  * + ảnh chỉ dành cho tin nối tiếp vào hội thoại đã có (Mera Send Mockup tách ≤3 ảnh/tin).
- * Trạng thái báo về Go backend (KHÔNG về app này) → fire-and-forget.
- * Trả clientId được nhắm tới, hoặc null nếu shop không có browser online.
+ * Extension báo trạng thái về /v1/extension/order-messages/status/:id (claim SENDING, DONE/FAILED).
+ * Ưu tiên extension có cap claim_v2; `preferClientId` (client của lô 1) để các lô sau của cùng
+ * đơn về đúng tab đang giữ hàng đợi theo đơn. `after_id` = id lô trước: lô trước hỏng/huỷ thì
+ * extension mới không gửi lô này.
+ * Trả client được nhắm tới + caps của nó, hoặc null nếu shop không có browser online.
  */
 export async function publishSendOrderMessage(
   shopName: string,
   // attachments bắt buộc (mảng rỗng nếu không gửi ảnh) để payload luôn có field này cho extension.
-  data: { id: string; order_id: string; message: string; attachments: string[] },
-): Promise<string | null> {
+  data: { id: string; order_id: string; message: string; attachments: string[]; after_id?: string },
+  opts: { preferClientId?: string } = {},
+): Promise<TargetPick | null> {
   const rest = getRest();
   if (!rest || !shopName) return null;
   const channel = rest.channels.get(shopName);
 
-  const targetClientId = await pickTargetClient(channel);
-  if (!targetClientId) return null;
+  const target = await pickTargetClient(channel, CAP_CLAIM_V2, opts.preferClientId ?? "");
+  if (!target) return null;
 
-  await channel.publish(SEND_ORDER_MESSAGE_EVENT, { ...data, clientId: targetClientId });
-  return targetClientId;
+  await channel.publish(SEND_ORDER_MESSAGE_EVENT, { ...data, clientId: target.clientId });
+  return target;
 }
 
 /**
@@ -216,7 +232,7 @@ export async function publishFetchOrderConvo(
   if (!rest || !shopName || data.order_ids.length === 0) return null;
   const channel = rest.channels.get(shopName);
 
-  const targetClientId = await pickTargetClient(channel);
+  const targetClientId = (await pickTargetClient(channel))?.clientId;
   if (!targetClientId) return null;
 
   await channel.publish(FETCH_ORDER_CONVO_EVENT, { ...data, clientId: targetClientId });
