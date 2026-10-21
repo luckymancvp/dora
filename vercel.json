@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/fetch-orders",
       "schedule": "0 */2 * * *"
+    },
+    {
+      "path": "/api/cron/delivery-push",
+      "schedule": "*/30 * * * *"
     }
   ]
 }
