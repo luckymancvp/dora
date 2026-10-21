@@ -1,8 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { randomUUID } from "crypto";
 import { requireEmail, errorResponse } from "@/lib/http/api-helpers";
-import { publishSendOrderMessage } from "@/lib/services/ably-publish";
-import { applyOrderMessageStatus, createOrderMessage } from "@/lib/services/order-message";
+import { publishSendOrderMessage, type TargetPick } from "@/lib/services/ably-publish";
+import {
+  applyOrderMessageStatus,
+  createOrderMessage,
+  setOrderMessageTarget,
+} from "@/lib/services/order-message";
 import { findDoraUserEmail } from "@/lib/services/dora-user";
 import { actorNotDoraUser, hasMachineApiKey } from "@/lib/http/machine-auth";
 
@@ -14,6 +18,11 @@ import { actorNotDoraUser, hasMachineApiKey } from "@/lib/http/machine-auth";
 // actorEmail (tuỳ chọn, CHỈ xét khi gọi bằng x-api-key — Mera fulfill gửi kèm email user Mera):
 // phải có trong `users` (đã từng đăng nhập dora-1) → 403 actor_not_dora_user; hợp lệ thì
 // sender_email = email đó. Không gửi actorEmail (Mera admin Send Mockup, Apps Script) → y hệt cũ.
+// afterId / preferClientId (tuỳ chọn — Mera Send Mockup đẩy nhiều lô của 1 đơn cùng lúc):
+// afterId = id lô trước cùng đơn (extension mới không gửi lô này nếu lô trước hỏng/huỷ);
+// preferClientId = clientId lô 1 để mọi lô về đúng tab đang giữ hàng đợi theo đơn.
+// Response 200: { ok, id, clientId, clientCaps } — clientCaps = cap extension được đẩy tới
+// ([] = extension cũ); Mera dựa vào đó để biết có được đẩy song song / huỷ an toàn không.
 export async function POST(req: NextRequest) {
   const viaApiKey = hasMachineApiKey(req);
 
@@ -31,6 +40,8 @@ export async function POST(req: NextRequest) {
       message?: string;
       attachments?: unknown;
       actorEmail?: unknown;
+      afterId?: unknown;
+      preferClientId?: unknown;
     };
     const shopName = (body.shopName ?? "").trim();
     const orderId = String(body.orderId ?? "").trim();
@@ -73,25 +84,54 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const afterId = typeof body.afterId === "string" ? body.afterId.trim().slice(0, 100) : "";
+    const preferClientId =
+      typeof body.preferClientId === "string" ? body.preferClientId.trim().slice(0, 100) : "";
+
     const id = randomUUID();
     // Ghi doc TRƯỚC khi publish: extension có thể báo DONE/FAILED gần như tức thì,
     // ghi sau sẽ có cửa sổ mà status update không tìm thấy doc để cập nhật.
-    await createOrderMessage({ id, shopName, orderId, message, attachments, senderEmail });
+    await createOrderMessage({ id, shopName, orderId, message, attachments, senderEmail, afterId });
 
-    const clientId = await publishSendOrderMessage(shopName, {
-      id,
-      order_id: orderId,
-      message,
-      attachments,
-    });
-    if (!clientId) {
+    let target: TargetPick | null;
+    try {
+      target = await publishSendOrderMessage(
+        shopName,
+        {
+          id,
+          order_id: orderId,
+          message,
+          attachments,
+          ...(afterId ? { after_id: afterId } : {}),
+        },
+        { preferClientId },
+      );
+    } catch (pubErr) {
+      // Như Dora CreateMessage (push lỗi → FAILED): Mera đọc 500 có JSON `error` là NOT_ACCEPTED
+      // ("chưa gửi gì, gửi lại an toàn"). Để doc ở NEW thì nếu lệnh thật ra đã tới extension
+      // (Ably timeout sau khi đã nhận), extension claim_v2 vẫn claim được và gửi → khách nhận 2 lần.
+      // FAILED trước ⇒ claim 409 ⇒ extension mới không gửi. (QA C4, 2026-10-06)
+      const reason = pubErr instanceof Error ? pubErr.message : String(pubErr);
+      await applyOrderMessageStatus(id, { status: "FAILED", error: `publish_failed: ${reason}`.slice(0, 300) }).catch(
+        (e) => console.warn("[POST /api/orders/message] mark FAILED after publish error:", (e as Error)?.message),
+      );
+      throw pubErr;
+    }
+    if (!target) {
       await applyOrderMessageStatus(id, { status: "FAILED", error: "shop_offline" });
       return NextResponse.json(
         { error: "Shop chưa có extension online", code: "shop_offline" },
         { status: 409 },
       );
     }
-    return NextResponse.json({ ok: true, id, clientId });
+    // Tin ĐÃ được đẩy: lỗi ghi target không được biến thành 500 (Mera sẽ coi là "chưa nhận"
+    // trong khi extension vẫn gửi) — chỉ log; thiếu target_caps thì Mera không huỷ, an toàn.
+    try {
+      await setOrderMessageTarget(id, target.clientId, target.caps);
+    } catch (e) {
+      console.warn("[POST /api/orders/message] set target failed:", (e as Error)?.message);
+    }
+    return NextResponse.json({ ok: true, id, clientId: target.clientId, clientCaps: target.caps });
   } catch (err) {
     return errorResponse(err, "POST /api/orders/message");
   }

@@ -32,6 +32,10 @@ export async function POST(
     if (!body.status) {
       return corsJson({ error: "missing status" }, { status: 400 });
     }
+    // CANCELLED chỉ do Mera đặt qua route huỷ của Dora — route công khai không nhận.
+    if (!["NEW", "SENDING", "DONE", "FAILED"].includes(body.status)) {
+      return corsJson({ error: "invalid status" }, { status: 400 });
+    }
     const ok = await updateMessageStatus(id, body.status, body.message ?? null);
     return corsJson({ ok });
   } catch (err) {
