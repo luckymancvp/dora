@@ -4,6 +4,7 @@ import { ObjectId, type AnyBulkWriteOperation } from "mongodb";
 import { getSheetConfigsCollection, getSheetRowsCollection } from "@/lib/db/collections";
 import { getAuthorizedSheetsClient, isInvalidGrantError, GoogleNotConnectedError } from "@/lib/google/auth";
 import { bulkRefreshSheetStatuses } from "@/lib/services/conversation-sheet-status";
+import { scheduleDeliveryPush } from "@/lib/services/delivery-push";
 import {
   findHeaderIndex,
   deriveReceiptTxKey,
@@ -194,6 +195,9 @@ export async function syncSheetNow(configId: ObjectId): Promise<{ rowCount: numb
         },
       },
     );
+    // Sync xong → hẹn đẩy mã tracking sang Mera (chạy sau response, không await). Push tự nuốt lỗi
+    // nên KHÔNG bao giờ làm sync lỗi; env DELIVERY_PUSH tắt thì là no-op.
+    scheduleDeliveryPush(configId);
     return { rowCount };
   } catch (err) {
     const message =

@@ -55,11 +55,16 @@ function meraConfig(): { base: string; key: string } | null {
   return { base: normalized, key };
 }
 
-interface MeraFetchInit {
+export interface MeraFetchInit {
   method?: string;
   body?: unknown;
   /** email session next-auth → header X-Actor-Email để audit đúng người thao tác. */
   actorEmail: string;
+  /**
+   * Timeout (ms), mặc định 15_000. Push delivery (30s/chunk) và refresh 1 mã (60s — Mera đọc Etsy qua
+   * extension) cần lâu hơn; mọi caller cũ không truyền nên giữ nguyên hành vi.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -67,7 +72,7 @@ interface MeraFetchInit {
  * để caller tự phân nhánh 400 ITEM_EDIT_REQUIRES_SPLIT / 409 version_conflict.
  * Chỉ throw khi thiếu env (503) hoặc mạng/timeout (502) — hai lỗi "hạ tầng" thật sự.
  */
-async function meraFetch(
+export async function meraFetch(
   path: string,
   init: MeraFetchInit,
 ): Promise<{ status: number; data: unknown }> {
@@ -85,8 +90,8 @@ async function meraFetch(
         ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
-      // Timeout 15s: Mera qua mạng nội bộ, quá 15s coi như không kết nối được.
-      signal: AbortSignal.timeout(15_000),
+      // Mặc định 15s: Mera qua mạng nội bộ, quá 15s coi như không kết nối được.
+      signal: AbortSignal.timeout(init.timeoutMs ?? 15_000),
       // Không cache: đây là dữ liệu vận hành cần tươi (resolve/update).
       cache: "no-store",
     });

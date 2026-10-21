@@ -1,4 +1,5 @@
 import type { ObjectId } from "mongodb";
+import type { DeliveryPushApplied } from "@/lib/types/delivery";
 
 /**
  * Cấu hình 1 Google Spreadsheet được kết nối (collection `sheet_configs`).
@@ -41,6 +42,17 @@ export interface SheetConfigDoc {
   syncing: boolean;
   /** Thời điểm chiếm cờ syncing lần gần nhất — để phát hiện & chiếm lại khoá "treo". */
   syncStartedAt?: Date | null;
+  // ---- Push mã tracking sang Mera (lib/services/delivery-push.ts, contract _workspace/01) ----
+  /** Lần push snapshot THÀNH CÔNG gần nhất (Mera trả 200 done). */
+  deliveryPushedAt?: Date | null;
+  /** sha256 hex của (window_from + rows đã sắp xếp) của lần push thành công gần nhất — trùng thì bỏ qua. */
+  deliveryPushHash?: string | null;
+  /** Khoá chống 2 lượt push song song cùng config; coi là treo sau DELIVERY_PUSH_STALE_LOCK_MS. */
+  deliveryPushStartedAt?: Date | null;
+  /** Lỗi của lần push gần nhất; null khi thành công. */
+  deliveryPushError?: string | null;
+  /** Thống kê Mera trả về ở lần push thành công gần nhất. */
+  deliveryPushApplied?: DeliveryPushApplied | null;
   createdAt: Date;
   updatedAt: Date;
 }

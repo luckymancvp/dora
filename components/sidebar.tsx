@@ -11,6 +11,7 @@ import {
   MessageCircle,
   Settings,
   MessagesSquare,
+  PackageCheck,
   PanelLeftClose,
   PanelLeftOpen,
   ShoppingBag,
@@ -46,6 +47,7 @@ const navItems = [
   { href: "/board", label: "Bảng xử lý", icon: LayoutGrid },
   { href: "/orders", label: "Orders", icon: ShoppingBag },
   { href: "/tracking", label: "Tracking", icon: Truck },
+  { href: "/delivery", label: "Giao hàng", icon: PackageCheck },
 ]
 
 const COLLAPSE_KEY = "sidebar.collapsed.v1"
