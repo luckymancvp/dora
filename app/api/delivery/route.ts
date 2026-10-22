@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/delivery — danh sách mã tracking (proxy Mera `GET /api/v2/delivery-trackings`).
  * Query = đúng query Mera (`buildDeliveryTrackingQuery`): project_id, status, q, store, provider,
- * date_field, from, to, review, rating, sort, page, limit. Không validate lại — Mera trả 400 kèm code.
+ * date_field (paid|ship|requested), from, to, review, rating, review_request, sort, page, limit. Không validate lại — Mera trả 400 kèm code.
  */
 export async function GET(req: NextRequest) {
   try {

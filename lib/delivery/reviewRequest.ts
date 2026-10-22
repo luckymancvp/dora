@@ -1,6 +1,7 @@
 import { hasReview } from "@/lib/delivery/review";
 import {
   DORA_PROJECT_ID,
+  REVIEW_REQUEST_TEMPLATE_TITLE_MAX,
   REVIEW_REQUEST_VARIABLES,
   isDoraProjectId,
 } from "@/lib/types/delivery";
@@ -8,10 +9,12 @@ import type {
   DeliveryApiErrorBody,
   DeliveryOrderReviewRequest,
   DeliveryTracking,
+  ReviewRequestSendRequest,
   ReviewRequestSendWarning,
-  ReviewRequestSettings,
   ReviewRequestSkipReason,
   ReviewRequestSkippedCounts,
+  ReviewRequestTemplate,
+  ReviewRequestTemplatesResponse,
 } from "@/lib/types/delivery";
 
 /**
@@ -57,6 +60,8 @@ export const SKIP_REASON_LABEL: Record<ReviewRequestSkipReason, string> & Partia
   no_orders: "Mã không có đơn trong phạm vi đang xem",
   no_receipt: "Đơn chưa có Etsy receipt",
   sending: "Đang gửi dở — không gửi lại",
+  // §13: đơn người dùng bỏ tích trong "Đơn sẽ gửi"
+  excluded: "Đã bỏ khỏi danh sách",
 };
 
 /** Nhãn lý do bỏ qua; key lạ → nguyên key; rỗng → "Bỏ qua". */
@@ -179,7 +184,7 @@ export function reviewRequestBadge(rr: DeliveryOrderReviewRequest | null | undef
 }
 
 /** Token biến của mẫu tin: `variables` rỗng → REVIEW_REQUEST_VARIABLES; token thiếu `{}` → bọc `{}`. */
-export function reviewRequestVariables(s?: Pick<ReviewRequestSettings, "variables"> | null): string[] {
+export function reviewRequestVariables(s?: Pick<ReviewRequestTemplatesResponse, "variables"> | null): string[] {
   const out: string[] = [];
   for (const raw of s?.variables ?? []) {
     if (typeof raw !== "string") continue;
@@ -298,15 +303,141 @@ export function manualWarnings(rows: DeliveryTracking[]): ManualWarning[] {
   return out;
 }
 
+// ---- §11 Thư viện mẫu tin ----
+
 /**
- * Câu lỗi route review-requests: `body.error` (+ shop nếu Mera trả kèm và câu chưa nhắc tới;
- * + `unknown_vars` của invalid_template khi câu chưa liệt kê).
+ * Câu tiếng Việt cho mã lỗi thư viện mẫu (Mera trả `error` tiếng Anh): POST/PUT/DELETE /templates,
+ * preview/run/send khi mẫu đã bị xoá, `template_required` (dora-1 tự chặn run thiếu mẫu).
+ */
+export const REVIEW_TEMPLATE_ERROR_LABEL: Partial<Record<string, string>> = {
+  duplicate_title: "Tiêu đề này đã có (không phân biệt hoa thường) — đặt tiêu đề khác",
+  invalid_title: `Tiêu đề không hợp lệ — bắt buộc, tối đa ${REVIEW_REQUEST_TEMPLATE_TITLE_MAX} ký tự`,
+  invalid_template: "Nội dung mẫu không hợp lệ",
+  system_template: "Mẫu mặc định của hệ thống không sửa / xoá được",
+  template_not_found: "Mẫu tin không còn tồn tại (có thể vừa bị xoá) — chọn mẫu khác",
+  template_required: "Chưa chọn mẫu tin",
+};
+
+/**
+ * Mẫu có đúng `id` trong thư viện; không có (đã bị xoá ở nơi khác / chưa tải) → null. KHÔNG tự rơi về
+ * mẫu khác (QA MT-3): UI giữ id đã chọn, hiện "(đã xoá)" và khoá chạy/gửi theo mẫu.
+ */
+export function pickReviewTemplate(
+  items: ReviewRequestTemplate[] | undefined,
+  id: string,
+): ReviewRequestTemplate | null {
+  return (items ?? []).find((t) => t.id === id) ?? null;
+}
+
+/** Tiêu đề Mera giữ chỗ cho mẫu hệ thống `default` — không được đặt trùng (mọi kiểu hoa thường). */
+export const REVIEW_DEFAULT_TEMPLATE_TITLE = "Mẫu mặc định";
+
+/** Số ký tự như Mera (utf8.RuneCountInString): đếm code point, không đếm đơn vị UTF-16. */
+export function reviewTextLength(text: string): number {
+  return [...text].length;
+}
+
+/**
+ * Tiêu đề như Mera lưu (QA MT-4/MT-6): chuẩn hoá Unicode NFC (Unikey "Unicode tổ hợp" sinh NFD) →
+ * gộp mọi chuỗi khoảng trắng / tab / xuống dòng thành 1 dấu cách → bỏ khoảng trắng 2 đầu.
+ */
+export function normalizeReviewTemplateTitle(title: string): string {
+  return title.normalize("NFC").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Kiểm tiêu đề phía client (Mera kiểm lại), trên bản đã chuẩn hoá: bắt buộc, ≤
+ * REVIEW_REQUEST_TEMPLATE_TITLE_MAX code point, không trùng (không phân biệt hoa thường) mẫu khác trong
+ * thư viện hay tiêu đề giữ chỗ "Mẫu mặc định". "" = hợp lệ.
+ */
+export function reviewTemplateTitleError(
+  title: string,
+  items: ReviewRequestTemplate[] | undefined,
+  selfId: string | null,
+): string {
+  const t = normalizeReviewTemplateTitle(title);
+  if (!t) return "Nhập tiêu đề";
+  if (reviewTextLength(t) > REVIEW_REQUEST_TEMPLATE_TITLE_MAX) {
+    return `Tiêu đề tối đa ${REVIEW_REQUEST_TEMPLATE_TITLE_MAX} ký tự`;
+  }
+  const key = t.toLowerCase();
+  const taken =
+    key === normalizeReviewTemplateTitle(REVIEW_DEFAULT_TEMPLATE_TITLE).toLowerCase() ||
+    (items ?? []).some((it) => it.id !== selfId && normalizeReviewTemplateTitle(it.title).toLowerCase() === key);
+  if (taken) return "Tiêu đề này đã có — đặt tiêu đề khác";
+  return "";
+}
+
+/**
+ * Câu lỗi route review-requests: mã lỗi mẫu tin (§11) → câu tiếng Việt, còn lại `body.error`
+ * (+ shop nếu Mera trả kèm và câu chưa nhắc tới; + `unknown_vars` của invalid_template / invalid_message
+ * khi câu chưa liệt kê; invalid_template không kèm biến (vd quá dài) → nối câu gốc của Mera).
  */
 export function reviewRequestErrorText(body: DeliveryApiErrorBody | undefined, fallback: string): string {
-  let msg = body?.error?.trim() || fallback || "Lỗi không rõ";
+  const label = body?.code ? REVIEW_TEMPLATE_ERROR_LABEL[body.code] : undefined;
+  const raw = body?.error?.trim() ?? "";
+  let msg = label || raw || fallback || "Lỗi không rõ";
+  if (label && body?.code === "invalid_template" && !(body.unknown_vars ?? []).length && raw) {
+    msg = `${msg}: ${raw}`;
+  }
   const shop = body?.shop?.trim();
   if (shop && !msg.includes(shop)) msg = `${msg} (shop ${shop})`;
   const vars = (body?.unknown_vars ?? []).filter((v) => typeof v === "string" && v && !msg.includes(v));
   if (vars.length > 0) msg = `${msg} — biến không hợp lệ: ${vars.join(", ")}`;
   return msg;
+}
+
+// ---- §13 Bỏ đơn khỏi danh sách gửi tay ----
+
+export interface ManualSendInput {
+  /** Mọi mã đang chọn (kể cả mã ở trang chưa tải — không biết đơn nên luôn gửi). */
+  selectionIds: string[];
+  /** Dòng đang có của các mã đã chọn. */
+  rows: Pick<DeliveryTracking, "id" | "orders">[];
+  /** order_id người dùng bỏ tích (khoá theo order_id như API `exclude_order_ids`). */
+  excluded: ReadonlySet<string>;
+  templateId: string;
+  /** Nội dung ô soạn — trim rỗng ⇒ bỏ field (Mera dùng template_id). */
+  message: string;
+  /** project_id đã map của bộ lọc; null = không giới hạn. */
+  projectId: string | null;
+}
+
+export interface ManualSendPlan {
+  request: ReviewRequestSendRequest;
+  /** Số đơn (order_id khác nhau) trên các dòng đang có. */
+  total: number;
+  /** Trong total: số đơn còn tích (sẽ gửi). */
+  included: number;
+}
+
+/**
+ * Body gửi tay sau khi bỏ đơn (plan §13): mã có đơn mà MỌI đơn bị bỏ tích ⇒ bỏ khỏi `ids`; mã còn
+ * ít nhất 1 đơn ⇒ giữ, và các đơn bị bỏ của mã đó vào `exclude_order_ids` (vắng khi rỗng). Mã không
+ * có dòng (trang khác) / không có đơn ⇒ giữ nguyên (Mera quyết, vd `no_orders`).
+ */
+export function buildManualSendPlan(input: ManualSendInput): ManualSendPlan {
+  const rowById = new Map(input.rows.map((r) => [r.id, r]));
+  const all = new Set<string>();
+  const ids: string[] = [];
+  const exclude = new Set<string>();
+  for (const id of input.selectionIds) {
+    const orders = rowById.get(id)?.orders ?? [];
+    for (const o of orders) all.add(o.order_id);
+    const kept = orders.filter((o) => !input.excluded.has(o.order_id));
+    if (orders.length > 0 && kept.length === 0) continue;
+    ids.push(id);
+    for (const o of orders) if (input.excluded.has(o.order_id)) exclude.add(o.order_id);
+  }
+  const text = input.message.trim();
+  const request: ReviewRequestSendRequest = {
+    ids,
+    template_id: input.templateId,
+    ...(text ? { message: text } : {}),
+    ...(exclude.size > 0 ? { exclude_order_ids: [...exclude] } : {}),
+    ...(input.projectId ? { project_id: input.projectId } : {}),
+  };
+  let included = 0;
+  for (const oid of all) if (!input.excluded.has(oid)) included++;
+  return { request, total: all.size, included };
 }

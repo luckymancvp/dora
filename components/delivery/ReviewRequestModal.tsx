@@ -1,16 +1,21 @@
 "use client";
 
 import { useEffect } from "react";
-import { X } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { selectClass } from "@/components/delivery/DeliveryToolbar";
 import { DeliveryApiError } from "@/lib/hooks/useDelivery";
-import { reviewRequestErrorText } from "@/lib/delivery/reviewRequest";
+import {
+  REVIEW_PREVIEW_SAMPLE_VARS,
+  renderReviewTemplate,
+  reviewRequestErrorText,
+} from "@/lib/delivery/reviewRequest";
 import { DORA_PROJECT_ID, isDoraProjectId } from "@/lib/types/delivery";
-import type { DeliveryProjectsResponse } from "@/lib/types/delivery";
+import type { DeliveryProjectsResponse, ReviewRequestTemplate } from "@/lib/types/delivery";
 
 /**
- * Phần dùng chung của 2 dialog Request reviews: khung modal (overlay fixed + Esc, khuôn drawer
- * hiện có — không thêm thư viện), select project (khi bộ lọc đang là "Tất cả"), câu lỗi API.
+ * Phần dùng chung của các dialog Request reviews: khung modal (overlay fixed + Esc, khuôn drawer
+ * hiện có — không thêm thư viện), select project (khi bộ lọc đang là "Tất cả"), select mẫu tin +
+ * khung xem trước (§11), câu lỗi API.
  */
 
 export function ReviewRequestModal({
@@ -18,11 +23,14 @@ export function ReviewRequestModal({
   onClose,
   children,
   footer,
+  wide = false,
 }: {
   title: React.ReactNode;
   onClose: () => void;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  /** Rộng hơn (dialog quản lý mẫu: danh sách + form cạnh nhau). */
+  wide?: boolean;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -39,7 +47,7 @@ export function ReviewRequestModal({
         <div
           role="dialog"
           aria-modal="true"
-          className="pointer-events-auto flex max-h-[calc(100vh-6rem)] w-full max-w-2xl flex-col rounded-xl border border-border bg-background shadow-xl"
+          className={`pointer-events-auto flex max-h-[calc(100vh-6rem)] w-full ${wide ? "max-w-4xl" : "max-w-2xl"} flex-col rounded-xl border border-border bg-background shadow-xl`}
         >
           <div className="flex items-center justify-between gap-2 border-b border-border px-5 py-3">
             <h2 className="text-base font-semibold text-foreground">{title}</h2>
@@ -118,6 +126,71 @@ export function ReviewErrorBox({ error }: { error: unknown }) {
   return (
     <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
       {reviewRequestError(error)}
+    </div>
+  );
+}
+
+/**
+ * Select mẫu tin (§11) — luôn có 1 mẫu được chọn (mặc định `default`). Đang tải / lỗi → chỉ hiện
+ * mẫu đang chọn để form vẫn gửi được bằng `template_id` hiện tại. `value` không còn trong thư viện
+ * (bị xoá ở nơi khác) → giữ nguyên, hiện option "(đã xoá)" + câu báo (QA MT-3); dialog tự khoá nút.
+ */
+export function ReviewTemplateSelect({
+  value,
+  onChange,
+  templates,
+  loading,
+}: {
+  value: string;
+  onChange: (templateId: string) => void;
+  templates: ReviewRequestTemplate[] | undefined;
+  loading: boolean;
+}) {
+  const items = templates ?? [];
+  const missing = items.length > 0 && !items.some((t) => t.id === value);
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor="review-request-template-select" className="font-medium text-foreground">
+          Mẫu tin:
+        </label>
+        <select
+          id="review-request-template-select"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={items.length === 0}
+          className={`${selectClass} min-w-[260px] max-w-full`}
+        >
+          {items.length === 0 && <option value={value}>{loading ? "Đang tải mẫu…" : value}</option>}
+          {missing && <option value={value}>(đã xoá) {value}</option>}
+          {items.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.title || t.id}
+              {t.is_system ? " (mặc định)" : ""}
+            </option>
+          ))}
+        </select>
+        {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+      </div>
+      {missing && <p className="text-xs text-destructive">Mẫu đang chọn đã bị xoá — chọn mẫu khác.</p>}
+    </div>
+  );
+}
+
+/** Khung "Xem trước" nội dung mẫu với dữ liệu mẫu (REVIEW_PREVIEW_SAMPLE_VARS). Trống → "—". */
+export function ReviewTemplatePreview({ content, label = "Xem trước" }: { content: string; label?: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <div className="font-medium text-foreground">
+        {label}{" "}
+        <span className="font-normal text-xs text-muted-foreground">
+          (dữ liệu mẫu: {REVIEW_PREVIEW_SAMPLE_VARS.buyer_name} · {REVIEW_PREVIEW_SAMPLE_VARS.order_id} ·{" "}
+          {REVIEW_PREVIEW_SAMPLE_VARS.shop_name})
+        </span>
+      </div>
+      <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm text-foreground">
+        {content.trim() ? renderReviewTemplate(content, REVIEW_PREVIEW_SAMPLE_VARS) : "—"}
+      </div>
     </div>
   );
 }

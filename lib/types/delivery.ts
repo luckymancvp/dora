@@ -177,8 +177,14 @@ export interface DeliveryTrackingListResponse {
   providers: DeliveryProviderCount[];
 }
 
-export type DeliveryDateField = "paid" | "ship";
+/** "requested" (plan §14) = ngày xin review (`sent_at` sổ ghi); Mera ngầm review_request=sent nếu không lọc. */
+export type DeliveryDateField = "paid" | "ship" | "requested";
 export type DeliveryReviewFilter = "none" | "any";
+/**
+ * Lọc "Xin review" (plan §14), xét theo đơn trong phạm vi đang xem: sent = có đơn đã gửi; pending = có đơn
+ * queued|checking|sending; failed = có đơn failed (gồm unconfirmed); none = không đơn nào đã gửi / đang chờ.
+ */
+export type DeliveryReviewRequestFilter = "sent" | "none" | "pending" | "failed";
 export type DeliveryTrackingSort = "delivered_desc";
 
 /**
@@ -198,6 +204,8 @@ export interface DeliveryTrackingListParams {
   to?: string;
   review?: DeliveryReviewFilter | "";
   rating?: ReviewStars | null;
+  /** Query `review_request`; ""/vắng = không lọc. Giá trị lạ → Mera 400 invalid_review_request. */
+  reviewRequest?: DeliveryReviewRequestFilter | "";
   sort?: DeliveryTrackingSort | "";
   page?: number;
   limit?: number;
@@ -290,7 +298,10 @@ export interface DeliveryApiErrorBody {
   /** too_many_per_shop. */
   count?: number;
   limit?: number;
-  /** invalid_template (review-requests settings): token biến không hợp lệ trong mẫu, vd "{name}". */
+  /**
+   * invalid_template (POST/PUT review-requests/templates) / invalid_message (send): token biến không hợp lệ,
+   * vd "{name}", theo thứ tự xuất hiện; [] khi lỗi chỉ do độ dài.
+   */
   unknown_vars?: string[];
 }
 
@@ -441,16 +452,24 @@ export const REVIEW_REQUEST_MAX_DAYS_MIN = 1;
 export const REVIEW_REQUEST_MAX_DAYS_MAX = 30;
 export const REVIEW_REQUEST_MAX_DAYS_DEFAULT = 7;
 
-/** GET/PUT /api/delivery/review-requests/settings. */
+/**
+ * GET/PUT /api/delivery/review-requests/settings. Từ §11 (nhiều mẫu tin) settings CHỈ còn `max_days` theo
+ * project / Dora — mẫu tin chuyển sang thư viện chung (`/templates`).
+ */
 export interface ReviewRequestSettings {
   /** hex | "dora". */
   project_id: string;
-  template: string;
+  /**
+   * @deprecated §11: mẫu tin nằm ở thư viện (`ReviewRequestTemplate`). Chỉ có khi Mera bản cũ còn trả
+   * (rollout lag) — route dora-1 giữ field khi là chuỗi, vắng thì bỏ hẳn. FE KHÔNG dùng cho luồng mới.
+   */
+  template?: string;
   /** 1–30. Cửa sổ ứng viên = đơn giao trong max_days ngày gần nhất. */
   max_days: number;
   /** true = chưa có doc cài đặt, đang dùng mặc định. */
   is_default: boolean;
-  default_template: string;
+  /** @deprecated §11 — như `template` (mẫu mặc định nay là item `id: "default"` của thư viện). */
+  default_template?: string;
   /** Token biến, vd "{buyer_name}". Route dora-1 bảo đảm là mảng (rỗng → FE dùng REVIEW_REQUEST_VARIABLES). */
   variables: string[];
   /** "" khi is_default. */
@@ -461,14 +480,79 @@ export interface ReviewRequestSettings {
 /** PUT body. */
 export interface ReviewRequestSettingsUpdate {
   project_id: string;
-  /** ≤ REVIEW_REQUEST_TEMPLATE_MAX; "" = về mẫu mặc định (Mera quyết). */
-  template: string;
   max_days: number;
+  /**
+   * @deprecated §11 — Mera mới bỏ qua. Route dora-1 chỉ chuyển tiếp khi client gửi chuỗi (giữ tương thích
+   * Mera bản cũ: ở đó template "" = về mẫu mặc định). FE mới KHÔNG gửi.
+   */
+  template?: string;
 }
 
-/** Body chung của preview / run (chỉ project). */
+/** Body chung của preview / run (chỉ project). @deprecated §11 — dùng ReviewRequestPreviewRequest / ReviewRequestRunRequest. */
 export interface ReviewRequestProjectBody {
   project_id: string;
+}
+
+// --- §11 Thư viện mẫu tin (dùng chung toàn hệ thống: mọi project + Dora) ---
+
+/** Id ảo của mẫu mặc định hệ thống (§3.1) — luôn có, đứng đầu danh sách, không sửa/xoá. */
+export const REVIEW_REQUEST_DEFAULT_TEMPLATE_ID = "default";
+export const REVIEW_REQUEST_TEMPLATE_TITLE_MAX = 100;
+
+/** 1 mẫu trong thư viện. Route dora-1 bảo đảm đủ key (chuỗi vắng → "", updated_at vắng → null). */
+export interface ReviewRequestTemplate {
+  /** ObjectId hex, hoặc "default" cho mẫu hệ thống. */
+  id: string;
+  /** ≤ REVIEW_REQUEST_TEMPLATE_TITLE_MAX; duy nhất không phân biệt hoa thường (Mera kiểm). */
+  title: string;
+  /** ≤ REVIEW_REQUEST_TEMPLATE_MAX; chỉ được chứa biến REVIEW_REQUEST_VARIABLES (Mera kiểm, B5). */
+  content: string;
+  /** true = mẫu hệ thống (`default`) — Mera trả 403 system_template nếu sửa/xoá. */
+  is_system: boolean;
+  /** Email; "" với mẫu hệ thống / Mera không trả. */
+  created_by: string;
+  updated_by: string;
+  /** RFC3339; null với mẫu hệ thống / Mera không trả. */
+  updated_at: string | null;
+}
+
+/** GET /api/delivery/review-requests/templates. Route dora-1 bảo đảm items/variables là mảng. */
+export interface ReviewRequestTemplatesResponse {
+  /** Thứ tự giữ nguyên Mera (`default` đứng đầu). Item không có id bị route bỏ (không chọn/sửa được). */
+  items: ReviewRequestTemplate[];
+  /** Như ReviewRequestSettings.variables — rỗng → FE dùng REVIEW_REQUEST_VARIABLES. */
+  variables: string[];
+}
+
+/**
+ * Body POST /templates (tạo) và PUT /templates/:id (sửa). dora-1 chỉ kiểm KIỂU (chuỗi); Mera kiểm giá trị:
+ * 400 invalid_title | invalid_template (+unknown_vars) | duplicate_title, 403 system_template, 404 template_not_found.
+ */
+export interface ReviewRequestTemplateInput {
+  title: string;
+  content: string;
+}
+
+/** DELETE /api/delivery/review-requests/templates/:id → 200. */
+export interface ReviewRequestTemplateDeleteResult {
+  ok: true;
+}
+
+/** POST /api/delivery/review-requests/preview body. */
+export interface ReviewRequestPreviewRequest {
+  project_id: string;
+  /** Vắng / "" (sau trim) = Mera dùng mẫu mặc định. Route dora-1 bỏ field khi rỗng. */
+  template_id?: string;
+}
+
+/** POST /api/delivery/review-requests/run body. */
+export interface ReviewRequestRunRequest {
+  project_id: string;
+  /**
+   * BẮT BUỘC (§11 T2: chọn mẫu lúc chạy). Thiếu / "" → dora-1 trả 400 template_required; id không tồn tại
+   * → Mera 404 template_not_found (dora-1 không kiểm tồn tại).
+   */
+  template_id: string;
 }
 
 /**
@@ -513,13 +597,20 @@ export interface ReviewRequestPreviewSample {
 
 /** POST /api/delivery/review-requests/preview. */
 export interface ReviewRequestPreview {
+  /** Mẫu Mera đã dùng để xem trước (§11). "" khi Mera bản cũ không trả. */
+  template_id: string;
   /** Số đơn sẽ được xếp hàng (sau khi trừ skipped). */
   candidates: number;
   /** Trong candidates: số đơn cần kiểm lại hội thoại từ Etsy trước khi gửi. */
   will_check_conversation: number;
   skipped: ReviewRequestSkippedCounts;
-  /** Route dora-1 bảo đảm là mảng. */
+  /**
+   * §14: TOÀN BỘ ứng viên (delivered_at mới → cũ), Mera cắt an toàn ở 5000. Route dora-1 bảo đảm là mảng.
+   * (Tên "sample" giữ nguyên từ API cũ ≤20.)
+   */
   sample: ReviewRequestPreviewSample[];
+  /** true = Mera đã cắt `sample` ở giới hạn 5000 (< candidates). Vắng (Mera cũ) → false. */
+  sample_truncated: boolean;
 }
 
 /** POST /api/delivery/review-requests/run — ghi hàng đợi, KHÔNG chờ gửi xong. */
@@ -535,8 +626,21 @@ export interface ReviewRequestRunResult {
 export interface ReviewRequestSendRequest {
   /** DeliveryTracking.id; ≤ BULK_MAX_PER_SHOP mã / shop (Mera kiểm lại). */
   ids: string[];
-  /** Vắng / "" (sau trim) = dùng mẫu của project từng đơn. Route dora-1 bỏ field khi rỗng. */
+  /**
+   * Nội dung soạn tay (đã sửa từ mẫu). Khác rỗng ⇒ Mera dùng message; vắng / "" (sau trim) ⇒ dùng
+   * `template_id`. Route dora-1 bỏ field khi rỗng.
+   */
   message?: string;
+  /**
+   * §11: mẫu đang chọn trong dropdown. Vắng cả message lẫn template_id ⇒ Mera dùng "default". Gửi kèm cả
+   * khi có message để Mera lưu mẫu gốc (+ edited). Route dora-1 bỏ field khi "" (sau trim).
+   */
+  template_id?: string;
+  /**
+   * §13: order_id (như `orders[].order_id`) người dùng bỏ tích trong "Đơn sẽ gửi" — Mera không xếp hàng,
+   * không ghi sổ, trả trong `skipped[]` với reason "excluded". Route dora-1 bỏ field khi mảng rỗng.
+   */
+  exclude_order_ids?: string[];
   /**
    * hex | "dora" — giới hạn đơn được xếp hàng vào project đang xem (mã có đơn ở nhiều project).
    * Vắng = Mera xếp hàng mọi đơn của mã. Route dora-1 chuyển tiếp nguyên, "" (sau trim) → bỏ field.

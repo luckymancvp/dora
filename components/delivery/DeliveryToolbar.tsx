@@ -23,6 +23,7 @@ export function DeliveryToolbar({
   exportDisabled,
   onExport,
   onRequestReviews,
+  onReviewTemplates,
   onReviewSettings,
   selectedCount,
 }: {
@@ -34,6 +35,7 @@ export function DeliveryToolbar({
   exportDisabled: boolean;
   onExport: () => void;
   onRequestReviews: () => void;
+  onReviewTemplates: () => void;
   onReviewSettings: () => void;
   /** Số mã đang chọn (badge trên mục Request reviews). */
   selectedCount: number;
@@ -71,6 +73,7 @@ export function DeliveryToolbar({
       </Button>
       <DeliveryUtilsDropdown
         onRequestReviews={onRequestReviews}
+        onReviewTemplates={onReviewTemplates}
         onReviewSettings={onReviewSettings}
         selectedCount={selectedCount}
       />

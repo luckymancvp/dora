@@ -20,13 +20,18 @@ import type {
   DeliveryTrackingOrder,
   DeliveryTrackingListResponse,
   ReviewRequestPreview,
-  ReviewRequestProjectBody,
+  ReviewRequestPreviewRequest,
+  ReviewRequestRunRequest,
   ReviewRequestRunResult,
   ReviewRequestSendRequest,
   ReviewRequestSendResult,
   ReviewRequestSettings,
   ReviewRequestSettingsUpdate,
   ReviewRequestSummary,
+  ReviewRequestTemplate,
+  ReviewRequestTemplateDeleteResult,
+  ReviewRequestTemplateInput,
+  ReviewRequestTemplatesResponse,
 } from "@/lib/types/delivery";
 
 /**
@@ -216,6 +221,7 @@ export function useBulkRefreshJob(jobId: string | null) {
 // =====================================================================================
 
 const RR_KEY = ["delivery", "review-requests"] as const;
+const RR_TEMPLATES_KEY = [...RR_KEY, "templates"] as const;
 
 function jsonPost(body: unknown, method: "POST" | "PUT" = "POST"): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
@@ -238,7 +244,7 @@ export function useReviewRequestSettings(projectId: string | null) {
   });
 }
 
-/** PUT settings — đặt kết quả vào cache settings của project; preview phải tính lại (max_days đổi). */
+/** PUT settings (§11: chỉ max_days) — đặt kết quả vào cache settings của project; preview phải tính lại. */
 export function useSaveReviewRequestSettings() {
   const qc = useQueryClient();
   return useMutation({
@@ -251,22 +257,44 @@ export function useSaveReviewRequestSettings() {
   });
 }
 
-/** Preview chạy tự động — luôn tính mới mỗi lần mở dialog (không cache, không retry). */
-export function useReviewRequestPreview(projectId: string | null, enabled: boolean) {
+/**
+ * Preview chạy tự động — luôn tính mới mỗi lần mở dialog (không cache, không retry).
+ * `templateId` (§11) nằm trong key: đổi mẫu = hỏi lại Mera (Mera kiểm mẫu còn tồn tại).
+ */
+export function useReviewRequestPreview(projectId: string | null, templateId: string, enabled: boolean) {
+  const onTemplateError = useRefetchTemplatesOnNotFound();
   return useQuery({
-    queryKey: [...RR_KEY, "preview", projectId],
-    queryFn: ({ signal }) => {
-      const body: ReviewRequestProjectBody = { project_id: projectId ?? "" };
-      return deliveryFetch<ReviewRequestPreview>("/api/delivery/review-requests/preview", {
-        ...jsonPost(body),
-        signal,
-      });
+    queryKey: [...RR_KEY, "preview", projectId, templateId],
+    queryFn: async ({ signal }) => {
+      const body: ReviewRequestPreviewRequest = { project_id: projectId ?? "", template_id: templateId };
+      try {
+        return await deliveryFetch<ReviewRequestPreview>("/api/delivery/review-requests/preview", {
+          ...jsonPost(body),
+          signal,
+        });
+      } catch (e) {
+        onTemplateError(e);
+        throw e;
+      }
     },
     enabled: enabled && !!projectId,
     staleTime: 0,
     gcTime: 0,
     retry: false,
   });
+}
+
+/**
+ * 404 `template_not_found` (mẫu vừa bị xoá ở nơi khác) từ preview / run / send → tải lại thư viện để
+ * select hiện "(đã xoá)" (QA MT-3).
+ */
+function useRefetchTemplatesOnNotFound() {
+  const qc = useQueryClient();
+  return (e: unknown) => {
+    if (e instanceof DeliveryApiError && e.code === "template_not_found") {
+      void qc.invalidateQueries({ queryKey: RR_TEMPLATES_KEY });
+    }
+  };
 }
 
 /** Sau run/send: dòng bảng (badge) + summary đổi; preview cũ hết đúng. */
@@ -281,21 +309,23 @@ function useAfterReviewRequestQueued() {
 
 export function useRunReviewRequests() {
   const afterQueued = useAfterReviewRequestQueued();
+  const onTemplateError = useRefetchTemplatesOnNotFound();
   return useMutation({
-    mutationFn: (projectId: string) => {
-      const body: ReviewRequestProjectBody = { project_id: projectId };
-      return deliveryFetch<ReviewRequestRunResult>("/api/delivery/review-requests/run", jsonPost(body));
-    },
+    mutationFn: (body: ReviewRequestRunRequest) =>
+      deliveryFetch<ReviewRequestRunResult>("/api/delivery/review-requests/run", jsonPost(body)),
     onSuccess: afterQueued,
+    onError: onTemplateError,
   });
 }
 
 export function useSendReviewRequests() {
   const afterQueued = useAfterReviewRequestQueued();
+  const onTemplateError = useRefetchTemplatesOnNotFound();
   return useMutation({
     mutationFn: (body: ReviewRequestSendRequest) =>
       deliveryFetch<ReviewRequestSendResult>("/api/delivery/review-requests/send", jsonPost(body)),
     onSuccess: afterQueued,
+    onError: onTemplateError,
   });
 }
 
@@ -313,5 +343,73 @@ export function useReviewRequestSummary(projectId: string | null) {
       const d = q.state.data;
       return d && d.queued + d.sending > 0 ? 10_000 : false;
     },
+  });
+}
+
+// ---- §11 Thư viện mẫu tin (dùng chung mọi project + Dora) ----
+
+const TEMPLATES_URL = "/api/delivery/review-requests/templates";
+
+function templateUrl(id: string): string {
+  return `${TEMPLATES_URL}/${encodeURIComponent(id)}`;
+}
+
+/** GET thư viện mẫu — `default` (is_system) đứng đầu. Dùng chung cho dialog quản lý + 2 dialog gửi. */
+export function useReviewRequestTemplates() {
+  return useQuery({
+    queryKey: RR_TEMPLATES_KEY,
+    queryFn: ({ signal }) => deliveryFetch<ReviewRequestTemplatesResponse>(TEMPLATES_URL, { signal }),
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * Sau tạo / sửa / xoá: vá cache ngay (form đọc lại mẫu vừa lưu, không nhấp nháy bản cũ) rồi hỏi lại
+ * Mera để lấy thứ tự / người sửa chuẩn.
+ */
+function useAfterTemplateChanged() {
+  const qc = useQueryClient();
+  const refetch = () => void qc.invalidateQueries({ queryKey: RR_TEMPLATES_KEY });
+  return {
+    patch: (fn: (items: ReviewRequestTemplate[]) => ReviewRequestTemplate[]) => {
+      qc.setQueryData<ReviewRequestTemplatesResponse>(RR_TEMPLATES_KEY, (old) =>
+        old ? { ...old, items: fn(old.items) } : old,
+      );
+      refetch();
+    },
+    // Lỗi (vd template_not_found: mẫu vừa bị người khác xoá / duplicate_title) → danh sách có thể đã cũ.
+    refetch,
+  };
+}
+
+export function useCreateReviewRequestTemplate() {
+  const after = useAfterTemplateChanged();
+  return useMutation({
+    mutationFn: (body: ReviewRequestTemplateInput) =>
+      deliveryFetch<ReviewRequestTemplate>(TEMPLATES_URL, jsonPost(body)),
+    onSuccess: (tpl) => after.patch((items) => [...items.filter((t) => t.id !== tpl.id), tpl]),
+    onError: after.refetch,
+  });
+}
+
+export function useUpdateReviewRequestTemplate() {
+  const after = useAfterTemplateChanged();
+  return useMutation({
+    mutationFn: ({ id, title, content }: ReviewRequestTemplateInput & { id: string }) => {
+      const body: ReviewRequestTemplateInput = { title, content };
+      return deliveryFetch<ReviewRequestTemplate>(templateUrl(id), jsonPost(body, "PUT"));
+    },
+    onSuccess: (tpl) => after.patch((items) => items.map((t) => (t.id === tpl.id ? tpl : t))),
+    onError: after.refetch,
+  });
+}
+
+export function useDeleteReviewRequestTemplate() {
+  const after = useAfterTemplateChanged();
+  return useMutation({
+    mutationFn: (id: string) =>
+      deliveryFetch<ReviewRequestTemplateDeleteResult>(templateUrl(id), { method: "DELETE" }),
+    onSuccess: (_res, id) => after.patch((items) => items.filter((t) => t.id !== id)),
+    onError: after.refetch,
   });
 }

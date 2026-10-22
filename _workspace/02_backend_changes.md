@@ -60,3 +60,36 @@ Mọi route `/api/delivery/review-requests/*`: `requireEmail()` (401 `{error:"un
 - FE đọc `sample[].has_conversation` (không còn `will_check_conversation` per-sample); `skipped[].tracking_code` (không còn `tracking_id`).
 - Gửi tay nên kèm `project_id = reviewRequestProjectId(project)` khi khác null.
 - Không gọi thử được route proxy thật: Mera BE chưa có `/api/v2/review-requests/*` (grep repo Mera không thấy) ⇒ hiện tại mọi route proxy trả 502 `mera_bad_response`, đúng R10.
+
+## § Nhiều mẫu tin (plan §11, 2026-10-22)
+
+`npx tsc --noEmit`: sạch ở mọi file backend; còn lỗi chỉ trong file FE đang được frontend-engineer sửa song song (`components/delivery/RequestReviewsDialog.tsx`, `ReviewRequestSettingsDialog.tsx`). Không commit.
+
+| File | Loại | Ghi chú |
+|---|---|---|
+| `lib/types/delivery.ts` phần D | sửa | + `ReviewRequestTemplate`, `ReviewRequestTemplatesResponse`, `ReviewRequestTemplateInput`, `ReviewRequestTemplateDeleteResult`, `ReviewRequestPreviewRequest`, `ReviewRequestRunRequest`, hằng `REVIEW_REQUEST_DEFAULT_TEMPLATE_ID`/`REVIEW_REQUEST_TEMPLATE_TITLE_MAX`; `ReviewRequestPreview.template_id`; `ReviewRequestSendRequest.template_id?`; settings `template?`/`default_template?` (deprecated); update `template?` (deprecated); `ReviewRequestProjectBody` deprecated |
+| `lib/services/review-request-proxy.ts` | sửa | `previewReviewRequests(body: ReviewRequestPreviewRequest, actor)`, `runReviewRequests(body: ReviewRequestRunRequest, actor)` (đổi chữ ký từ projectId); + `listReviewRequestTemplates`, `createReviewRequestTemplate`, `updateReviewRequestTemplate`, `deleteReviewRequestTemplate` (timeout mặc định 15s) |
+| `lib/http/delivery-error.ts` | sửa | `deliveryBadRequest` nhận thêm code `template_required` |
+| `app/api/delivery/review-requests/{preview,run,send,settings}/route.ts` | sửa | template_id (preview/send optional, run bắt buộc); PUT settings không còn bắt `template` |
+| `app/api/delivery/review-requests/templates/route.ts` | mới | GET + POST |
+| `app/api/delivery/review-requests/templates/[id]/route.ts` | mới | PUT + DELETE |
+
+Route + type: xem contract `01_architect_contract.md` § Nhiều mẫu tin.
+
+Ghi chú:
+- **run thiếu template_id bị dora-1 chặn 400 `template_required`** (không chờ Mera) — Mera bản cũ bỏ qua field lạ, nếu không chặn sẽ lặng lẽ gửi theo mẫu cũ của project.
+- **PUT settings:** dora-1 KHÔNG tự điền `template`. Rollout lag: nếu Mera vẫn là bản cũ (template "" = về mặc định) thì FE mới không gửi template → Mera cũ có thể coi thiếu = "" và xoá mẫu cũ. Chỉ an toàn khi Mera §11 deploy trước/cùng lúc dora-1.
+- Mera BE §11 chưa có code templates (grep `mera-fulfill-backend` không thấy) ⇒ route templates hiện trả 502 `mera_bad_response` (gin 404 text), đúng R10. Shape item theo bảng §11 plan; nếu Mera bọc `{template:{…}}` ở POST/PUT, service tự bóc.
+
+## § Bỏ đơn khỏi gửi tay (plan §13, 2026-10-22)
+
+- `ReviewRequestSendRequest.exclude_order_ids?: string[]` (order_id như `orders[].order_id`).
+- `POST /api/delivery/review-requests/send`: `exclude_order_ids` vắng hoặc mảng chuỗi, sai → 400 `invalid_body`; trim, bỏ chuỗi rỗng + trùng; mảng rỗng → bỏ field. Service `sendReviewRequests` chuyển tiếp nguyên body (không đổi code service).
+- Response không đổi: đơn bị loại về trong `skipped[]` với `reason: "excluded"` (reason vốn pass-through chuỗi). Lọc mã mà mọi đơn bị loại khỏi `ids` là việc FE (plan §13).
+
+## § Lọc "Xin review" + preview đủ danh sách (plan §14, 2026-10-22)
+
+- `DeliveryDateField` = `"paid" | "ship" | "requested"`; mới `DeliveryReviewRequestFilter = "sent" | "none" | "pending" | "failed"`; `DeliveryTrackingListParams.reviewRequest?: DeliveryReviewRequestFilter | ""` (query `review_request`).
+- `lib/services/delivery-proxy.ts`: `LIST_QUERY_KEYS` thêm `review_request`. Proxy KHÔNG validate `date_field` (chuyển tiếp nguyên) ⇒ `requested` tự qua; giá trị lạ → Mera 400 `invalid_review_request` chuyển tiếp nguyên.
+- `ReviewRequestPreview.sample_truncated: boolean` (sanitizer `=== true`, vắng → false); `sample` giờ là toàn bộ ứng viên (≤5000).
+- Việc của FE: `lib/delivery/deliveryTracking.ts` (`buildDeliveryTrackingQuery` dòng ~209, parse URL ~264/282) đang ép `date_field` về `paid|ship` và chưa map `reviewRequest` → phải sửa để `requested` / `review_request` thật sự tới proxy.

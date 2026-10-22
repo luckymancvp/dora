@@ -55,6 +55,8 @@ const LIST_QUERY_KEYS = [
   "to",
   "review",
   "rating",
+  // plan §14 — lọc "Xin review" (sent|none|pending|failed); Mera validate.
+  "review_request",
   "sort",
   "page",
   "limit",

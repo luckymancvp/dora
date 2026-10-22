@@ -1,12 +1,14 @@
 import "server-only";
 
 import { asNumber, asString } from "@/lib/services/etsy-utils";
-import { callMera } from "@/lib/services/delivery-proxy";
+import { callMera, DeliveryProxyError } from "@/lib/services/delivery-proxy";
 import {
   REVIEW_REQUEST_MAX_DAYS_DEFAULT,
   type ReviewRequestFailedItem,
   type ReviewRequestPreview,
+  type ReviewRequestPreviewRequest,
   type ReviewRequestPreviewSample,
+  type ReviewRequestRunRequest,
   type ReviewRequestRunResult,
   type ReviewRequestSendRequest,
   type ReviewRequestSendResult,
@@ -16,10 +18,14 @@ import {
   type ReviewRequestSettingsUpdate,
   type ReviewRequestSkippedCounts,
   type ReviewRequestSummary,
+  type ReviewRequestTemplate,
+  type ReviewRequestTemplateDeleteResult,
+  type ReviewRequestTemplateInput,
+  type ReviewRequestTemplatesResponse,
 } from "@/lib/types/delivery";
 
 /**
- * Proxy MỎNG tới Request reviews của Mera (`/api/v2/review-requests/*`, plan request-reviews §5)
+ * Proxy MỎNG tới Request reviews của Mera (`/api/v2/review-requests/*`, plan request-reviews §5 + §11 mẫu tin)
  * cho trang /delivery (contract _workspace/01 §3). Cùng nguyên tắc delivery-proxy.ts: internal key
  * + `X-Actor-Email`, lỗi Mera chuyển tiếp NGUYÊN VĂN qua `callMera` (bảng §3.2 contract delivery cũ).
  *
@@ -61,20 +67,52 @@ function withProject(path: string, projectId: string): string {
   return `${path}?${new URLSearchParams({ project_id: projectId }).toString()}`;
 }
 
+/** Rỗng giữ rỗng — FE tự fallback REVIEW_REQUEST_VARIABLES (helper reviewRequestVariables). */
+function stringList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
 function normalizeSettings(data: Json): ReviewRequestSettings {
   return {
     project_id: asString(data.project_id),
-    template: asString(data.template),
     max_days: asNumber(data.max_days) ?? REVIEW_REQUEST_MAX_DAYS_DEFAULT,
     is_default: data.is_default === true,
-    default_template: asString(data.default_template),
-    // Rỗng giữ rỗng — FE tự fallback REVIEW_REQUEST_VARIABLES (helper reviewRequestVariables).
-    variables: Array.isArray(data.variables)
-      ? data.variables.filter((v): v is string => typeof v === "string")
-      : [],
+    variables: stringList(data.variables),
     updated_by: asString(data.updated_by),
     updated_at: timeOrNull(data.updated_at),
+    // §11: template / default_template đã bỏ khỏi settings. Chỉ giữ khi Mera bản cũ còn trả chuỗi
+    // (rollout lag) — KHÔNG điền "" khi vắng, để FE phân biệt "Mera mới" với "mẫu rỗng".
+    ...(typeof data.template === "string" ? { template: data.template } : {}),
+    ...(typeof data.default_template === "string" ? { default_template: data.default_template } : {}),
   };
+}
+
+function normalizeTemplate(o: Json): ReviewRequestTemplate {
+  return {
+    // Mera trả ObjectId hex dạng chuỗi; idString phòng khi lỡ serialize số.
+    id: idString(o.id),
+    title: asString(o.title),
+    content: asString(o.content),
+    is_system: o.is_system === true,
+    created_by: asString(o.created_by),
+    updated_by: asString(o.updated_by),
+    updated_at: timeOrNull(o.updated_at),
+  };
+}
+
+/**
+ * Mera trả mẫu ở gốc body; một số handler gin hay bọc `{template: {...}}` — bóc nếu có. Thiếu id ⇒ coi
+ * như phản hồi hỏng (FE cần id để setQueryData / sửa tiếp), không bịa id.
+ */
+function templateFromBody(data: Json): ReviewRequestTemplate {
+  const t = normalizeTemplate(isPlainObject(data.template) ? data.template : data);
+  if (!t.id) {
+    throw new DeliveryProxyError(502, {
+      error: "Mera trả mẫu tin không có id",
+      code: "mera_bad_response",
+    });
+  }
+  return t;
 }
 
 /**
@@ -146,7 +184,7 @@ export async function getReviewRequestSettings(
   return normalizeSettings(data);
 }
 
-/** PUT /api/v2/review-requests/settings — Mera kiểm giới hạn template/max_days, trả lại settings mới. */
+/** PUT /api/v2/review-requests/settings — Mera kiểm max_days (1–30), trả lại settings mới. */
 export async function updateReviewRequestSettings(
   body: ReviewRequestSettingsUpdate,
   actorEmail: string,
@@ -157,31 +195,35 @@ export async function updateReviewRequestSettings(
 
 /** POST /api/v2/review-requests/preview — đếm ứng viên tự động, không ghi gì. */
 export async function previewReviewRequests(
-  projectId: string,
+  body: ReviewRequestPreviewRequest,
   actorEmail: string,
 ): Promise<ReviewRequestPreview> {
   const data = await callMera(`${BASE}/preview`, {
     method: "POST",
-    body: { project_id: projectId },
+    body,
     actorEmail,
     timeoutMs: HEAVY_TIMEOUT_MS,
   });
   return {
+    // Mera bản cũ (trước §11) không trả → "" (không tự điền id đã gửi: FE cần biết Mera dùng mẫu nào thật).
+    template_id: asString(data.template_id),
     candidates: num(data.candidates),
     will_check_conversation: num(data.will_check_conversation),
     skipped: normalizeSkippedCounts(data.skipped),
     sample: objects(data.sample).map(normalizeSample),
+    // Chỉ nhận true thật — Mera cũ không có field (sample ≤20, FE so với candidates nếu cần).
+    sample_truncated: data.sample_truncated === true,
   };
 }
 
 /** POST /api/v2/review-requests/run — ghi hàng đợi rồi trả ngay (không chờ gửi xong). */
 export async function runReviewRequests(
-  projectId: string,
+  body: ReviewRequestRunRequest,
   actorEmail: string,
 ): Promise<ReviewRequestRunResult> {
   const data = await callMera(`${BASE}/run`, {
     method: "POST",
-    body: { project_id: projectId },
+    body,
     actorEmail,
     timeoutMs: HEAVY_TIMEOUT_MS,
   });
@@ -220,4 +262,55 @@ export async function getReviewRequestSummary(
     sent_today: num(data.sent_today),
     failed_recent: objects(data.failed_recent).map(normalizeFailed),
   };
+}
+
+// --- §11 Thư viện mẫu tin (dùng chung toàn hệ thống, không theo project) ---
+
+/** GET /api/v2/review-requests/templates — `default` (is_system) luôn đứng đầu, giữ nguyên thứ tự Mera. */
+export async function listReviewRequestTemplates(
+  actorEmail: string,
+): Promise<ReviewRequestTemplatesResponse> {
+  const data = await callMera(`${BASE}/templates`, { actorEmail });
+  return {
+    // Item thiếu id thì FE không chọn/sửa/xoá được (và trùng React key) → bỏ thay vì bịa id.
+    items: objects(data.items)
+      .map(normalizeTemplate)
+      .filter((t) => t.id !== ""),
+    variables: stringList(data.variables),
+  };
+}
+
+/** POST /api/v2/review-requests/templates — Mera kiểm title/content, trả mẫu vừa tạo. */
+export async function createReviewRequestTemplate(
+  body: ReviewRequestTemplateInput,
+  actorEmail: string,
+): Promise<ReviewRequestTemplate> {
+  const data = await callMera(`${BASE}/templates`, { method: "POST", body, actorEmail });
+  return templateFromBody(data);
+}
+
+/** PUT /api/v2/review-requests/templates/:id — 403 system_template / 404 template_not_found chuyển tiếp nguyên. */
+export async function updateReviewRequestTemplate(
+  id: string,
+  body: ReviewRequestTemplateInput,
+  actorEmail: string,
+): Promise<ReviewRequestTemplate> {
+  const data = await callMera(`${BASE}/templates/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body,
+    actorEmail,
+  });
+  return templateFromBody(data);
+}
+
+/**
+ * DELETE /api/v2/review-requests/templates/:id. 2xx (callMera đã bảo đảm body là object) = xoá xong →
+ * luôn trả `{ok:true}` thay vì tin field `ok` của Mera.
+ */
+export async function deleteReviewRequestTemplate(
+  id: string,
+  actorEmail: string,
+): Promise<ReviewRequestTemplateDeleteResult> {
+  await callMera(`${BASE}/templates/${encodeURIComponent(id)}`, { method: "DELETE", actorEmail });
+  return { ok: true };
 }

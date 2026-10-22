@@ -179,3 +179,51 @@ Ghi kết quả: backend → `_workspace/02_backend_changes.md`, frontend → `_
    - `settings.variables` dạng có ngoặc nhọn (khớp giả định §7.3).
    - `review_request.status` ∈ queued|checking|sending|sent|failed|skipped + `skip_reason` (optional, pass-through list/detail).
 6. **QA B4 (backend-engineer, khớp struct Go thật):** `skipped` = 3 key gốc + mọi key số khác (`send_blocked_env`, `shop_offline`, `conversation_unknown`, `manual_failed`…, index signature); `run.checking`, `summary.checking` (summary.queued đã gồm checking); `send.skipped[].tracking_id`; `sample[].project_id/tracking_id`; `DeliveryApiErrorBody.unknown_vars?: string[]` (invalid_template).
+
+## § Nhiều mẫu tin (plan §11, 2026-10-22 — backend-engineer, khớp API Mera §11)
+
+Thư viện mẫu **dùng chung toàn hệ thống** (không theo project). Settings chỉ còn `max_days` theo project / Dora.
+
+### Route (mọi route: `requireEmail()`, actor = email session → `X-Actor-Email`; 2xx Mera → **200**; lỗi Mera chuyển tiếp NGUYÊN status + body qua `deliveryErrorResponse`)
+
+| Route dora-1 | Vào (dora-1 chỉ kiểm KIỂU) | 200 | Mera |
+|---|---|---|---|
+| `GET /api/delivery/review-requests/templates` | — | `ReviewRequestTemplatesResponse` | `GET /api/v2/review-requests/templates` |
+| `POST /api/delivery/review-requests/templates` | `ReviewRequestTemplateInput` — `title`, `content` string (sai → 400 `invalid_body`), gửi nguyên văn | `ReviewRequestTemplate` | `POST …/templates` · 400 `invalid_title` / `invalid_template` (+`unknown_vars`) / `duplicate_title` |
+| `PUT /api/delivery/review-requests/templates/:id` | như POST; id `encodeURIComponent` | `ReviewRequestTemplate` | `PUT …/templates/:id` · 400 như trên · 403 `system_template` · 404 `template_not_found` |
+| `DELETE /api/delivery/review-requests/templates/:id` | id encode | `ReviewRequestTemplateDeleteResult` `{ok:true}` | `DELETE …/templates/:id` · 403 `system_template` · 404 `template_not_found` |
+| `POST /api/delivery/review-requests/preview` | `ReviewRequestPreviewRequest` `{project_id, template_id?}` (template_id không phải string → `invalid_body`; "" sau trim → bỏ field) | `ReviewRequestPreview` (+`template_id`) | `POST …/preview` |
+| `POST /api/delivery/review-requests/run` | `ReviewRequestRunRequest` `{project_id, template_id}` — template_id không phải string → `invalid_body`; vắng/"" → 400 **`template_required`** (dora-1 chặn, trùng code Mera) | `ReviewRequestRunResult` (không đổi) | `POST …/run` · 404 `template_not_found` |
+| `POST /api/delivery/review-requests/send` | `ReviewRequestSendRequest` `{ids, message?, template_id?, project_id?}` — field rỗng sau trim → bỏ; gửi cả message lẫn template_id nếu có | `ReviewRequestSendResult` (không đổi) | `POST …/send` · 404 `template_not_found` |
+| `GET/PUT /api/delivery/review-requests/settings` | PUT `{project_id, max_days, template?}` — `template` deprecated, chỉ chuyển tiếp khi client gửi string | `ReviewRequestSettings` (`template`/`default_template` optional) | `GET/PUT …/settings` |
+
+### Type (`lib/types/delivery.ts` phần D)
+```ts
+export const REVIEW_REQUEST_DEFAULT_TEMPLATE_ID = "default";
+export const REVIEW_REQUEST_TEMPLATE_TITLE_MAX = 100;
+export interface ReviewRequestTemplate {
+  id: string; title: string; content: string; is_system: boolean;
+  created_by: string; updated_by: string; updated_at: string | null;
+}
+export interface ReviewRequestTemplatesResponse { items: ReviewRequestTemplate[]; variables: string[] }
+export interface ReviewRequestTemplateInput { title: string; content: string }      // POST + PUT body
+export interface ReviewRequestTemplateDeleteResult { ok: true }
+export interface ReviewRequestPreviewRequest { project_id: string; template_id?: string }
+export interface ReviewRequestRunRequest { project_id: string; template_id: string }
+// ReviewRequestPreview: + template_id: string ("" khi Mera cũ không trả)
+// ReviewRequestSendRequest: { ids: string[]; message?: string; template_id?: string; project_id?: string }
+// ReviewRequestSettings: template?: string (@deprecated), default_template?: string (@deprecated) — có khi Mera cũ còn trả
+// ReviewRequestSettingsUpdate: { project_id: string; max_days: number; template?: string (@deprecated) }
+// ReviewRequestProjectBody: @deprecated (giữ cho code cũ)
+// deliveryBadRequest code: + "template_required"
+```
+Chuẩn hoá 2xx: template item đủ key (chuỗi vắng → "", `is_system` → `=== true`, `updated_at` rỗng → null); item không có id bị bỏ; `variables` → mảng string. POST/PUT: bóc `{template:{…}}` nếu Mera bọc; thiếu id → 502 `mera_bad_response`. DELETE 2xx → luôn `{ok:true}`.
+
+### Seam bổ sung (qa-integration)
+| # | Luồng | Shape | Param | Field FE đọc |
+|---|---|---|---|---|
+| T1 | List mẫu | `ReviewRequestTemplatesResponse` | — | `items[].id/title/content/is_system/updated_by/updated_at`, `variables` |
+| T2 | Tạo/sửa | `ReviewRequestTemplate` | `{title, content}` | lỗi `invalid_title`/`invalid_template`(+`unknown_vars`)/`duplicate_title`/`system_template`/`template_not_found` → `body.error` |
+| T3 | Xoá | `{ok:true}` | `:id` | 403/404 → `body.error` |
+| T4 | Run | như R6 | `{project_id, template_id}` bắt buộc | 400 `template_required`, 404 `template_not_found` |
+| T5 | Send | như R7 | `{ids, message?, template_id?, project_id?}` | — |
