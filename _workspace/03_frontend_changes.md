@@ -147,3 +147,12 @@ Type (backend): `DeliveryDateField` thêm `"requested"`, `DeliveryReviewRequestF
 - **(b)** `lib/delivery/deliveryTracking.ts`: `REVIEW_REQUEST_FILTER_OPTIONS`, `isReviewRequestFilter`, `parseDateField` (paid|ship|requested, lạ → paid), `DATE_FIELD_OPTIONS`. `TrackingUrlState.reviewRequest`; `parseTrackingUrl` đọc `?review_request=` (lạ → ''), `date_field` qua `parseDateField`; `trackingUrlSearch` ghi `review_request` + `date_field` khác paid (khi có from/to như cũ); `trackingListParams` truyền `reviewRequest` (export XLSX dùng chung → cùng bộ lọc); `buildDeliveryTrackingQuery` set `review_request` khi hợp lệ, `date_field` = paid|ship|requested. Smoke test tsx: `review_request=pending&date_field=requested&from=…` giữ nguyên URL ↔ API; giá trị lạ bị bỏ.
 - `DeliveryFilters`: select "Xin review" (Xin review: Tất cả / Đã xin review / Chưa xin review / Đang chờ gửi / Gửi lỗi · Chưa xác nhận), viền `border-primary text-primary` khi đang lọc như ô Review; select loại ngày thêm "Ngày xin review". Đổi lọc → về trang 1 (logic `update` sẵn có).
 - tsc sạch; eslint scratchpad 0 lỗi, 1 warning `react-hooks/incompatible-library` ở `useVirtualizer` (giống ConversationList/MessageList hiện có).
+
+## §15 Sửa được "Mẫu mặc định" (2026-10-22)
+
+Type (backend): `ReviewRequestTemplate.customized` / `.editable` (route chuẩn hoá; Mera cũ → `editable = !is_system`), `ReviewRequestTemplateUpdate {content, title?}`.
+
+- Hook: `useUpdateReviewRequestTemplate` nhận `ReviewRequestTemplateUpdate & {id}`; `title` vắng → body chỉ `{content}`. Mới `useResetDefaultReviewRequestTemplate()` → POST `/api/delivery/review-requests/templates/default/reset`, cast `ReviewRequestTemplate`. Cả hai: thành công vá item trong cache + invalidate `["delivery","review-requests","templates"]`; lỗi → invalidate.
+- `ReviewRequestTemplatesDialog`: chỉ đọc khi `!editable` (thay cho `is_system`). Mẫu hệ thống: tiêu đề khoá (không kiểm / không gửi), nội dung sửa được (chèn biến, kiểm B5, xem trước), lưu = PUT `/templates/default` `{content}`, không có nút Xoá. `customized` → badge danh sách "Hệ thống · đã sửa", dòng "Đã sửa (khác nội dung gốc)" + người/lúc sửa, nút "Khôi phục mẫu gốc" (confirm) → reset, bỏ bản nháp.
+- Field đọc thêm: `customized`, `editable`.
+- tsc sạch; eslint scratchpad 0 lỗi.

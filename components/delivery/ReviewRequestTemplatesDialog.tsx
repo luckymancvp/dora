@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Loader2, Plus, Save, Trash2 } from "lucide-react";
+import { Loader2, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,6 +14,7 @@ import {
   DeliveryApiError,
   useCreateReviewRequestTemplate,
   useDeleteReviewRequestTemplate,
+  useResetDefaultReviewRequestTemplate,
   useReviewRequestTemplates,
   useUpdateReviewRequestTemplate,
 } from "@/lib/hooks/useDelivery";
@@ -46,7 +47,7 @@ export interface ReviewRequestTemplatesDialogProps {
 /**
  * Dialog "Mẫu tin Request reviews" (plan §11): quản lý thư viện mẫu dùng chung mọi project + Dora —
  * danh sách, thêm / sửa / xoá (xác nhận), chèn biến, xem trước, kiểm biến như B5 + tiêu đề ≤ 100.
- * Mẫu hệ thống `default` chỉ xem. Có thay đổi chưa lưu → hỏi lại trước khi đổi mẫu / đóng.
+ * Mẫu hệ thống `default` (§15): sửa được nội dung, tiêu đề khoá, không xoá; đã sửa → "Khôi phục mẫu gốc". Có thay đổi chưa lưu → hỏi lại trước khi đổi mẫu / đóng.
  */
 export function ReviewRequestTemplatesDialog(props: ReviewRequestTemplatesDialogProps) {
   if (!props.open) return null;
@@ -59,6 +60,7 @@ function TemplatesBody({ onClose }: { onClose: () => void }) {
   const create = useCreateReviewRequestTemplate();
   const update = useUpdateReviewRequestTemplate();
   const remove = useDeleteReviewRequestTemplate();
+  const resetDefault = useResetDefaultReviewRequestTemplate();
   const ref = useRef<HTMLTextAreaElement>(null);
 
   const [selId, setSelId] = useState<string>(REVIEW_REQUEST_DEFAULT_TEMPLATE_ID);
@@ -74,20 +76,25 @@ function TemplatesBody({ onClose }: { onClose: () => void }) {
   const deletedElsewhere = !isNew && !!items && !current;
   const source: ReviewRequestTemplateInput = current ? { title: current.title, content: current.content } : EMPTY;
   const value = draft ?? source;
-  const readOnly = !isNew && (!current || current.is_system);
+  // `editable` do route chuẩn hoá (Mera cũ không trả → !is_system): mẫu hệ thống trên Mera cũ vẫn chỉ xem.
+  const readOnly = !isNew && (!current || !current.editable);
+  // Mẫu hệ thống (§15): tiêu đề cố định "Mẫu mặc định" — không sửa, không kiểm, không gửi.
+  const isSystem = !isNew && !!current?.is_system;
+  const titleLocked = readOnly || isSystem;
   const dirty = draft != null && (draft.title !== source.title || draft.content !== source.content);
 
-  const titleErr = readOnly ? "" : reviewTemplateTitleError(value.title, items, current?.id ?? null);
+  const titleErr = titleLocked ? "" : reviewTemplateTitleError(value.title, items, current?.id ?? null);
   const badTokens = readOnly ? [] : invalidTemplateTokens(value.content);
   const contentEmpty = !value.content.trim();
-  const pending = create.isPending || update.isPending || remove.isPending;
+  const pending = create.isPending || update.isPending || remove.isPending || resetDefault.isPending;
   const canSave = !readOnly && dirty && !titleErr && !contentEmpty && badTokens.length === 0 && !pending;
-  const mutationError = isNew ? create.error : (update.error ?? remove.error);
+  const mutationError = isNew ? create.error : (update.error ?? remove.error ?? resetDefault.error);
 
   const resetMutations = () => {
     create.reset();
     update.reset();
     remove.reset();
+    resetDefault.reset();
   };
 
   /** Có bản nháp chưa lưu → hỏi trước khi bỏ. */
@@ -136,7 +143,10 @@ function TemplatesBody({ onClose }: { onClose: () => void }) {
         toast.success(`Đã tạo mẫu "${tpl.title}"`);
         setSelId(tpl.id);
       } else if (current) {
-        const tpl = await update.mutateAsync({ id: current.id, ...input });
+        // §15: mẫu hệ thống chỉ gửi `{content}`.
+        const tpl = await update.mutateAsync(
+          current.is_system ? { id: current.id, content: value.content } : { id: current.id, ...input },
+        );
         toast.success(`Đã lưu mẫu "${tpl.title}"`);
         setSelId(tpl.id);
       }
@@ -150,6 +160,22 @@ function TemplatesBody({ onClose }: { onClose: () => void }) {
         toast.warning("Mẫu đã bị xoá — nội dung đang soạn được giữ lại dưới dạng mẫu mới");
       }
       // Lỗi khác hiện trong dialog (mutationError).
+    }
+  };
+
+  /** §15: khôi phục nội dung gốc của mẫu mặc định (bỏ bản sửa + bản nháp đang soạn). */
+  const handleResetDefault = async () => {
+    if (!current?.is_system || pending) return;
+    const ok = confirm(
+      "Khôi phục nội dung gốc của mẫu mặc định? Bản sửa hiện tại sẽ mất; tin gửi bằng mẫu mặc định từ giờ dùng nội dung gốc.",
+    );
+    if (!ok) return;
+    try {
+      await resetDefault.mutateAsync();
+      toast.success("Đã khôi phục mẫu mặc định gốc");
+      setDraft(null);
+    } catch {
+      // Lỗi hiện trong dialog (mutationError).
     }
   };
 
@@ -214,7 +240,7 @@ function TemplatesBody({ onClose }: { onClose: () => void }) {
                         </span>
                         {t.is_system && (
                           <span className="shrink-0 rounded bg-secondary px-1 py-0.5 text-[10px] font-medium text-muted-foreground">
-                            Hệ thống
+                            {t.customized ? "Hệ thống · đã sửa" : "Hệ thống"}
                           </span>
                         )}
                       </div>
@@ -266,9 +292,16 @@ function TemplatesBody({ onClose }: { onClose: () => void }) {
                 {isNew ? (
                   <span>Mẫu mới</span>
                 ) : current?.is_system ? (
-                  <span className="rounded bg-secondary px-1.5 py-0.5 font-medium text-foreground">
-                    Mẫu mặc định của hệ thống — chỉ xem, không sửa / xoá
-                  </span>
+                  <>
+                    <span className="rounded bg-secondary px-1.5 py-0.5 font-medium text-foreground">
+                      {current.editable
+                        ? "Mẫu mặc định của hệ thống — sửa được nội dung, không đổi tiêu đề / không xoá"
+                        : "Mẫu mặc định của hệ thống — chỉ xem, không sửa / xoá"}
+                    </span>
+                    {current.customized && <span>Đã sửa (khác nội dung gốc)</span>}
+                    {current.updated_by && <span>· Sửa bởi {current.updated_by}</span>}
+                    {current.updated_at && <span>lúc {formatDateTimeVN(current.updated_at)}</span>}
+                  </>
                 ) : current ? (
                   <>
                     {current.created_by && <span>Tạo bởi {current.created_by}</span>}
@@ -286,14 +319,14 @@ function TemplatesBody({ onClose }: { onClose: () => void }) {
                   id="review-template-title"
                   value={value.title}
                   onChange={(e) => edit({ title: e.target.value })}
-                  readOnly={readOnly}
+                  readOnly={titleLocked}
                   placeholder="vd: Xin review — giọng thân thiện"
                   aria-invalid={draft != null && !!titleErr}
                   className="h-9"
                 />
                 <div className="flex justify-between gap-2 text-xs">
                   <span className="text-destructive">{draft != null ? titleErr : ""}</span>
-                  {!readOnly && (
+                  {!titleLocked && (
                     <span className="whitespace-nowrap text-muted-foreground">
                       {reviewTextLength(normalizeReviewTemplateTitle(value.title))}/{REVIEW_REQUEST_TEMPLATE_TITLE_MAX}
                     </span>
@@ -347,6 +380,16 @@ function TemplatesBody({ onClose }: { onClose: () => void }) {
                     <Button variant="destructive" onClick={handleDelete} disabled={pending}>
                       {remove.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                       Xoá
+                    </Button>
+                  )}
+                  {isSystem && current?.customized && current.editable && (
+                    <Button variant="outline" onClick={handleResetDefault} disabled={pending}>
+                      {resetDefault.isPending ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <RotateCcw className="h-4 w-4" />
+                      )}
+                      Khôi phục mẫu gốc
                     </Button>
                   )}
                 </div>
