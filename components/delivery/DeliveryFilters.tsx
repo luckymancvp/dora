@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, RefreshCw, Search, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { selectClass } from "@/components/delivery/DeliveryToolbar";
 import {
@@ -34,22 +34,18 @@ const REVIEW_OPTIONS = [
 ] as const;
 
 /**
- * Thanh lọc: tìm (q) · shop · fulfill · review (+ theo sao) · Xin review · ngày Paid/Ship/Xin review từ–đến
- * · Tải lại.
+ * Thanh lọc: tìm (q) · shop · fulfill · review (+ theo sao) · Xin review · ngày Paid/Ship/Xin review từ–đến.
+ * Nút "Tải lại" nằm ở DeliveryToolbar (header) để thanh lọc gọn một dòng.
  * `data` = response list hiện tại (nguồn option shop/fulfill + số đếm review); undefined khi chưa tải.
  */
 export function DeliveryFilters({
   filters,
   data,
-  loading,
   onChange,
-  onReload,
 }: {
   filters: TrackingUrlState;
   data: DeliveryTrackingListResponse | undefined;
-  loading: boolean;
   onChange: (patch: Partial<TrackingUrlState>) => void;
-  onReload: () => void;
 }) {
   const [qInput, setQInput] = useState(filters.q);
 
@@ -82,7 +78,7 @@ export function DeliveryFilters({
             if (e.key === "Enter") onChange({ q: qInput });
           }}
           placeholder="Tìm mã tracking / Order ID"
-          className={cn(selectClass, "w-72 pl-8 pr-8")}
+          className={cn(selectClass, "w-64 pl-8 pr-8")}
         />
         {qInput && (
           <button
@@ -243,19 +239,6 @@ export function DeliveryFilters({
             Bỏ lọc ngày
           </Button>
         )}
-      </div>
-
-      <div className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
-        {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={loading}
-          onClick={onReload}
-          title="Tải lại danh sách từ Mera (không đọc Etsy)"
-        >
-          <RefreshCw className="h-3.5 w-3.5" /> Tải lại
-        </Button>
       </div>
     </div>
   );
