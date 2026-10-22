@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { errorResponse } from "@/lib/http/api-helpers";
 import { DeliveryProxyError } from "@/lib/services/delivery-proxy";
+import type { DeliveryApiErrorBody } from "@/lib/types/delivery";
 
 /**
  * Map lỗi của route /api/delivery/* → response (contract _workspace/01 §3.2).
@@ -13,4 +14,10 @@ export function deliveryErrorResponse(err: unknown, tag: string): NextResponse {
     return NextResponse.json(err.body, { status: err.status });
   }
   return errorResponse(err, tag);
+}
+
+/** 400 do dora-1 tự chặn (body/query sai KIỂU) — cùng shape DeliveryApiErrorBody như lỗi Mera. */
+export function deliveryBadRequest(error: string, code: "invalid_body" | "invalid_project_id"): NextResponse {
+  const body: DeliveryApiErrorBody = { error, code };
+  return NextResponse.json(body, { status: 400 });
 }

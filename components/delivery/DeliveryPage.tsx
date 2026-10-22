@@ -13,6 +13,8 @@ import { DeliveryPagination } from "@/components/delivery/DeliveryPagination";
 import { DeliveryStatusTabs } from "@/components/delivery/DeliveryStatusTabs";
 import { DeliveryTable } from "@/components/delivery/DeliveryTable";
 import { DeliveryToolbar } from "@/components/delivery/DeliveryToolbar";
+import { RequestReviewsDialog } from "@/components/delivery/RequestReviewsDialog";
+import { ReviewRequestSettingsDialog } from "@/components/delivery/ReviewRequestSettingsDialog";
 import {
   DeliveryApiError,
   fetchDeliveryList,
@@ -34,7 +36,7 @@ import {
 } from "@/lib/delivery/deliveryTracking";
 import { exportTrackingXlsx } from "@/lib/delivery/trackingExport";
 import { togglePage, toggleSelection, type TrackingSelection } from "@/lib/delivery/trackingSelection";
-import type { BulkRefreshJob, DeliveryTracking } from "@/lib/types/delivery";
+import type { BulkRefreshJob, DeliveryTracking, DeliveryTrackingListResponse } from "@/lib/types/delivery";
 
 /**
  * Màn "Giao hàng" (/delivery) — tracking chung Mera ↔ dora-1, chép màn Tracking của Mera
@@ -199,6 +201,30 @@ function DeliveryScreen({ initial }: { initial: TrackingUrlState }) {
     [qc],
   );
 
+  // ---- Request reviews (Utils) ----
+  const [reviewDialog, setReviewDialog] = useState<"request" | "settings" | null>(null);
+  const closeReviewDialog = useCallback(() => setReviewDialog(null), []);
+  // Gửi tay xong → bỏ chọn.
+  const clearSelection = useCallback(() => setSelection(new Map()), []);
+  const [selectedRows, setSelectedRows] = useState<DeliveryTracking[]>([]);
+  // Lúc mở dialog: chụp dòng của các mã đang chọn từ MỌI list đang cache (lựa chọn giữ qua trang/bộ
+  // lọc), trang hiện tại ưu tiên (mới nhất), bỏ trùng theo id. Mã ở trang chưa tải → dialog báo
+  // "ở trang khác". Overlay modal chặn bảng nên lựa chọn không đổi khi dialog đang mở.
+  const openRequestReviews = () => {
+    const byId = new Map<string, DeliveryTracking>();
+    const take = (items: DeliveryTracking[] | undefined) => {
+      for (const it of items ?? []) if (selection.has(it.id) && !byId.has(it.id)) byId.set(it.id, it);
+    };
+    if (selection.size > 0) {
+      take(data?.items);
+      for (const [, d] of qc.getQueriesData<DeliveryTrackingListResponse>({ queryKey: ["delivery", "list"] })) {
+        take(d?.items);
+      }
+    }
+    setSelectedRows([...byId.values()]);
+    setReviewDialog("request");
+  };
+
   // ---- Export XLSX: toàn bộ kết quả của bộ lọc (mọi trang) ----
   const [exportProgress, setExportProgress] = useState<string | null>(null);
   const handleExport = async () => {
@@ -243,6 +269,9 @@ function DeliveryScreen({ initial }: { initial: TrackingUrlState }) {
           exportProgress={exportProgress}
           exportDisabled={data != null && total === 0}
           onExport={handleExport}
+          onRequestReviews={openRequestReviews}
+          onReviewSettings={() => setReviewDialog("settings")}
+          selectedCount={selection.size}
         />
       </DeliveryHeader>
 
@@ -304,6 +333,23 @@ function DeliveryScreen({ initial }: { initial: TrackingUrlState }) {
         onClose={closeDrawer}
         onRefresh={handleRefresh}
         refreshing={!!drawerRow && refreshingIds.has(drawerRow.id)}
+      />
+
+      <RequestReviewsDialog
+        open={reviewDialog === "request"}
+        onClose={closeReviewDialog}
+        project={filters.project}
+        selection={selection}
+        selectedRows={selectedRows}
+        projects={projects.data}
+        onSent={clearSelection}
+      />
+
+      <ReviewRequestSettingsDialog
+        open={reviewDialog === "settings"}
+        onClose={closeReviewDialog}
+        project={filters.project}
+        projects={projects.data}
       />
     </>
   );

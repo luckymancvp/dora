@@ -82,12 +82,11 @@ const PUSH_ROW_PROJECTION = {
  * Lọc SƠ BỘ phía Mongo để khỏi kéo ~19k dòng/lượt (sync gọi push ~2 phút/config). Chỉ loại dòng mà
  * `buildDeliveryPushRows` CHẮC CHẮN cũng loại — JS vẫn là nguồn sự thật (lọc lại đầy đủ):
  *  - Tracking rỗng/thiếu.
- *  - Date đúng "YYYY-MM-DD" (không khoảng trắng) và < ngày của window_from (so chuỗi = so ngày)
- *    VÀ Time hợp lệ hoặc rỗng — khi đó paid_at parse được và chắc chắn < window_from.
- *    Date/Time sai định dạng (paid_at null, A7) đều được GIỮ để vẫn gửi Mera.
+ *  - Date đúng "YYYY-MM-DD" (không khoảng trắng) và < ngày của window_from (so chuỗi = so ngày) —
+ *    `sheetPaidAt` coi giờ lạ là 00:00 nên paid_at chắc chắn < window_from bất kể cột Time.
+ *    Các kiểu Date khác (M/D/YYYY, MM-DD-YYYY, ISO…) đều được GIỮ, JS tự lọc theo cửa sổ.
  * Lệch duy nhất có thể: ngày đúng định dạng nhưng không tồn tại (vd "2025-02-30") cũ hơn cửa sổ —
  * JS gửi với paid_at null, Mongo bỏ. Mera đằng nào cũng bỏ dòng đó (skipped_invalid), chỉ lệch số đếm.
- * `\s` của Mongo (PCRE) hẹp hơn `trim()` JS → khoảng trắng lạ chỉ làm GIỮ thêm dòng (an toàn).
  */
 function pushRowsFilter(configId: ObjectId, windowFromIso: string): Filter<SheetRowDoc> {
   const windowDate = windowFromIso.slice(0, 10);
@@ -97,7 +96,6 @@ function pushRowsFilter(configId: ObjectId, windowFromIso: string): Filter<Sheet
     $or: [
       { "values.Date": { $gte: windowDate } },
       { "values.Date": { $not: /^\d{4}-\d{2}-\d{2}$/ } },
-      { "values.Time": { $not: /^\s*(([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?)?\s*$/ } },
     ],
   };
 }
@@ -139,36 +137,50 @@ function pad2(n: number): string {
 }
 
 /**
- * Date ("YYYY-MM-DD") + Time ("H:mm:ss" | "HH:mm" | rỗng → 00:00:00) của sheet → RFC3339 giờ VN (D9).
- * STRICT: sai định dạng / ngày không tồn tại (2026-02-30) → null. Dòng null vẫn được gửi (A7) để
+ * Date + Time của sheet → RFC3339. Các sheet production ghi Date theo nhiều kiểu (khảo sát 2026-10-21):
+ *  - "YYYY-MM-DD"                         → giờ VN (D9)
+ *  - "M/D/YYYY", "MM-DD-YYYY" (THÁNG trước — hàng nghìn dòng có số thứ 2 > 12, số thứ 1 > 12 gần như
+ *    không có) → giờ VN
+ *  - timestamp ISO đầy đủ "2026-09-30T15:44:29Z" (cột Time khi đó lại ghi ngày) → giữ nguyên thời điểm
+ * Time: "H:mm[:ss]"; rỗng hoặc không phải giờ (vd "2026-07-27") → 00:00:00 — vẫn giữ được ngày.
+ * Ngày không nhận ra / không tồn tại (2026-02-30, "18/8/25") → null; dòng null vẫn được gửi (A7) để
  * Mera đếm `skipped_invalid` — quan sát được thay vì dòng biến mất im lặng.
  */
 export function sheetPaidAt(date: string, time: string): string | null {
   const d = (date ?? "").trim();
-  const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
-  if (!dm) return null;
-  const y = Number(dm[1]);
-  const mo = Number(dm[2]);
-  const da = Number(dm[3]);
-  // Round-trip qua Date.UTC để loại ngày tràn (JS tự "cuộn" 02-30 → 03-02).
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/.test(d)) {
+    const ms = Date.parse(d);
+    return Number.isNaN(ms) ? null : new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+  }
+
+  let y: number;
+  let mo: number;
+  let da: number;
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(d);
+  const us = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(d);
+  if (iso) {
+    [y, mo, da] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+  } else if (us) {
+    [mo, da, y] = [Number(us[1]), Number(us[2]), Number(us[3])];
+  } else {
+    return null;
+  }
+  // Round-trip qua Date.UTC để loại ngày tràn (JS tự "cuộn" 02-30 → 03-02, tháng 13 → năm sau).
   const probe = new Date(Date.UTC(y, mo - 1, da));
   if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== da) {
     return null;
   }
 
-  const t = (time ?? "").trim();
   let hh = 0;
   let mm = 0;
   let ss = 0;
-  if (t !== "") {
-    const tm = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(t);
-    if (!tm) return null;
+  const tm = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec((time ?? "").trim());
+  if (tm && Number(tm[1]) <= 23 && Number(tm[2]) <= 59 && Number(tm[3] ?? 0) <= 59) {
     hh = Number(tm[1]);
     mm = Number(tm[2]);
-    ss = tm[3] !== undefined ? Number(tm[3]) : 0;
-    if (hh > 23 || mm > 59 || ss > 59) return null;
+    ss = Number(tm[3] ?? 0);
   }
-  return `${d}T${pad2(hh)}:${pad2(mm)}:${pad2(ss)}+07:00`;
+  return `${y}-${pad2(mo)}-${pad2(da)}T${pad2(hh)}:${pad2(mm)}:${pad2(ss)}+07:00`;
 }
 
 /**
