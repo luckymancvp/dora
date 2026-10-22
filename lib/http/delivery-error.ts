@@ -16,8 +16,14 @@ export function deliveryErrorResponse(err: unknown, tag: string): NextResponse {
   return errorResponse(err, tag);
 }
 
-/** 400 do dora-1 tự chặn (body/query sai KIỂU) — cùng shape DeliveryApiErrorBody như lỗi Mera. */
-export function deliveryBadRequest(error: string, code: "invalid_body" | "invalid_project_id"): NextResponse {
+/**
+ * 400 do dora-1 tự chặn (body/query sai KIỂU) — cùng shape DeliveryApiErrorBody như lỗi Mera.
+ * `template_required` (run thiếu template_id) trùng code Mera để FE phân nhánh một kiểu.
+ */
+export function deliveryBadRequest(
+  error: string,
+  code: "invalid_body" | "invalid_project_id" | "template_required",
+): NextResponse {
   const body: DeliveryApiErrorBody = { error, code };
   return NextResponse.json(body, { status: 400 });
 }

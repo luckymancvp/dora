@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -13,20 +13,8 @@ import {
   reviewProjectName,
 } from "@/components/delivery/ReviewRequestModal";
 import { useReviewRequestSettings, useSaveReviewRequestSettings } from "@/lib/hooks/useDelivery";
-import {
-  REVIEW_PREVIEW_SAMPLE_VARS,
-  formatDateTimeVN,
-  invalidTemplateMessage,
-  invalidTemplateTokens,
-  renderReviewTemplate,
-  reviewRequestProjectId,
-  reviewRequestVariables,
-} from "@/lib/delivery/reviewRequest";
-import {
-  REVIEW_REQUEST_MAX_DAYS_MAX,
-  REVIEW_REQUEST_MAX_DAYS_MIN,
-  REVIEW_REQUEST_TEMPLATE_MAX,
-} from "@/lib/types/delivery";
+import { formatDateTimeVN, reviewRequestProjectId } from "@/lib/delivery/reviewRequest";
+import { REVIEW_REQUEST_MAX_DAYS_MAX, REVIEW_REQUEST_MAX_DAYS_MIN } from "@/lib/types/delivery";
 import type { DeliveryProjectsResponse, ReviewRequestSettings } from "@/lib/types/delivery";
 
 export interface ReviewRequestSettingsDialogProps {
@@ -38,8 +26,9 @@ export interface ReviewRequestSettingsDialogProps {
 }
 
 /**
- * Dialog "Cài đặt Request reviews" (plan §6): mẫu tin (chèn biến + xem trước) và `max_days`
- * theo project đang xem / Dora. Bộ lọc "Tất cả" → chọn project trong dialog.
+ * Dialog "Cài đặt Request reviews" (plan §6, §11): chỉ còn `max_days` theo project đang xem / Dora —
+ * mẫu tin chuyển sang thư viện chung (dialog "Mẫu tin Request reviews"). Bộ lọc "Tất cả" → chọn
+ * project trong dialog.
  */
 export function ReviewRequestSettingsDialog(props: ReviewRequestSettingsDialogProps) {
   if (!props.open) return null;
@@ -64,7 +53,7 @@ function SettingsBody({ onClose, project, projects }: ReviewRequestSettingsDialo
       <DoraScopeNote project={project} />
 
       {!projectId ? (
-        <p className="text-muted-foreground">Chọn project để xem / sửa mẫu tin.</p>
+        <p className="text-muted-foreground">Chọn project để xem / sửa cài đặt.</p>
       ) : settings.isLoading ? (
         <div className="flex items-center gap-2 text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Đang tải cài đặt…
@@ -93,42 +82,24 @@ function SettingsForm({
   settings: ReviewRequestSettings;
   onSaved: () => void;
 }) {
-  const [template, setTemplate] = useState(settings.template);
   const [maxDays, setMaxDays] = useState(String(settings.max_days));
-  const ref = useRef<HTMLTextAreaElement>(null);
   const save = useSaveReviewRequestSettings();
-  const variables = reviewRequestVariables(settings);
 
   const days = Number(maxDays);
   const daysValid =
     Number.isInteger(days) && days >= REVIEW_REQUEST_MAX_DAYS_MIN && days <= REVIEW_REQUEST_MAX_DAYS_MAX;
-  // Biến sai dạng sẽ tới tay khách nguyên văn (Mera chỉ bắt {chữ_cái}) → báo + khoá Lưu (QA B5).
-  const badTokens = invalidTemplateTokens(template);
-  // Mẫu trống = Mera dùng mẫu mặc định → xem trước theo mẫu mặc định.
-  const previewSource = template.trim() ? template : settings.default_template;
-
-  /** Chèn biến tại con trỏ (thay vùng đang bôi đen); quá giới hạn ký tự thì không chèn. */
-  const insertVariable = (token: string) => {
-    const el = ref.current;
-    const start = el?.selectionStart ?? template.length;
-    const end = el?.selectionEnd ?? template.length;
-    const next = template.slice(0, start) + token + template.slice(end);
-    if (next.length > REVIEW_REQUEST_TEMPLATE_MAX) {
-      toast.warning(`Mẫu tin tối đa ${REVIEW_REQUEST_TEMPLATE_MAX} ký tự`);
-      return;
-    }
-    setTemplate(next);
-    const caret = start + token.length;
-    requestAnimationFrame(() => {
-      el?.focus();
-      el?.setSelectionRange(caret, caret);
-    });
-  };
 
   const handleSave = async () => {
-    if (save.isPending || !daysValid || badTokens.length > 0) return;
+    if (save.isPending || !daysValid) return;
     try {
-      await save.mutateAsync({ project_id: projectId, template, max_days: days });
+      // §11: mẫu tin nằm ở thư viện, Mera mới bỏ qua `template`. Nhưng GET còn trả `template` (Mera bản cũ /
+      // rollout lag) thì gửi lại NGUYÊN VĂN — Mera cũ ghi `template: ""` khi vắng, làm mất mẫu riêng của
+      // project trước khi bước nhập thư viện kịp chạy (QA MT-1).
+      await save.mutateAsync({
+        project_id: projectId,
+        max_days: days,
+        ...(typeof settings.template === "string" ? { template: settings.template } : {}),
+      });
       toast.success("Đã lưu cài đặt Request reviews");
       onSaved();
     } catch {
@@ -144,55 +115,6 @@ function SettingsForm({
         )}
         {settings.updated_by && <span>Sửa bởi {settings.updated_by}</span>}
         {settings.updated_at && <span>lúc {formatDateTimeVN(settings.updated_at)}</span>}
-      </div>
-
-      <div className="space-y-1">
-        <div className="flex items-center justify-between gap-2">
-          <label htmlFor="review-request-template" className="font-medium text-foreground">
-            Mẫu tin
-          </label>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setTemplate(settings.default_template)}
-            disabled={!settings.default_template || template === settings.default_template}
-          >
-            Dùng mẫu mặc định
-          </Button>
-        </div>
-        <textarea
-          id="review-request-template"
-          ref={ref}
-          value={template}
-          onChange={(e) => setTemplate(e.target.value)}
-          maxLength={REVIEW_REQUEST_TEMPLATE_MAX}
-          rows={9}
-          placeholder={settings.default_template || "Nội dung tin xin review…"}
-          className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/50 dark:bg-input/30"
-        />
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1">
-            <span className="text-xs text-muted-foreground">Chèn biến:</span>
-            {variables.map((v) => (
-              <Button key={v} variant="outline" size="xs" onClick={() => insertVariable(v)} className="font-mono">
-                {v}
-              </Button>
-            ))}
-          </div>
-          <span className="text-xs text-muted-foreground">
-            {template.length}/{REVIEW_REQUEST_TEMPLATE_MAX}
-          </span>
-        </div>
-        {badTokens.length > 0 && <p className="text-xs text-destructive">{invalidTemplateMessage(badTokens)}</p>}
-      </div>
-
-      <div className="space-y-1">
-        <div className="font-medium text-foreground">
-          Xem trước{!template.trim() && <span className="font-normal text-muted-foreground"> (mẫu mặc định)</span>}
-        </div>
-        <div className="whitespace-pre-wrap rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm text-foreground">
-          {previewSource ? renderReviewTemplate(previewSource, REVIEW_PREVIEW_SAMPLE_VARS) : "—"}
-        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -218,11 +140,14 @@ function SettingsForm({
           </span>
         )}
       </div>
+      <p className="text-xs text-muted-foreground">
+        Mẫu tin dùng chung mọi project — sửa ở Utils → &quot;Mẫu tin Request reviews&quot;, chọn mẫu lúc gửi.
+      </p>
 
       <ReviewErrorBox error={save.error} />
 
       <div className="flex justify-end">
-        <Button size="lg" onClick={handleSave} disabled={save.isPending || !daysValid || badTokens.length > 0}>
+        <Button size="lg" onClick={handleSave} disabled={save.isPending || !daysValid}>
           {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           Lưu
         </Button>

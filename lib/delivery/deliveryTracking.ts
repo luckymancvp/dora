@@ -17,6 +17,7 @@ import type {
   DeliveredRatingCountKey,
   DeliveredReviewedTab,
   DeliveryDateField,
+  DeliveryReviewRequestFilter,
   DeliveryStatus,
   DeliveryStatusCounts,
   DeliveryTrackingListParams,
@@ -101,6 +102,29 @@ export function isReviewStars(v: unknown): v is ReviewStars {
 export function deliveredRatingCountKey(stars: ReviewStars): DeliveredRatingCountKey {
   return `delivered_rating_${stars}`;
 }
+
+/** Ô "Xin review" (plan request-reviews §14b) — giá trị `review_request` của list Mera; '' = Tất cả. */
+export const REVIEW_REQUEST_FILTER_OPTIONS: { value: DeliveryReviewRequestFilter; label: string; hint: string }[] = [
+  { value: "sent", label: "Đã xin review", hint: "Có đơn đã được gửi tin xin review" },
+  { value: "none", label: "Chưa xin review", hint: "Chưa đơn nào được gửi / đang chờ gửi (đơn lỗi / bỏ qua tính là chưa xin)" },
+  { value: "pending", label: "Đang chờ gửi", hint: "Có đơn đang trong hàng đợi / kiểm hội thoại / đang gửi" },
+  { value: "failed", label: "Gửi lỗi · Chưa xác nhận", hint: "Có đơn gửi tin xin review lỗi hoặc chưa rõ kết quả" },
+];
+
+export function isReviewRequestFilter(v: unknown): v is DeliveryReviewRequestFilter {
+  return v === "sent" || v === "none" || v === "pending" || v === "failed";
+}
+
+/** Loại ngày của ô lọc ngày; lạ / vắng → "paid". "requested" = ngày xin review (§14b). */
+export function parseDateField(v: unknown): DeliveryDateField {
+  return v === "ship" || v === "requested" ? v : "paid";
+}
+
+export const DATE_FIELD_OPTIONS: { value: DeliveryDateField; label: string }[] = [
+  { value: "paid", label: "Ngày Paid" },
+  { value: "ship", label: "Ngày Ship" },
+  { value: "requested", label: "Ngày xin review" },
+];
 
 /** Tab hợp lệ trên URL (không gồm '' = All). */
 export function isTrackingTab(v: unknown): v is Exclude<TrackingTab, ""> {
@@ -203,10 +227,12 @@ export function buildDeliveryTrackingQuery(p: DeliveryTrackingListParams): strin
   if (store) qs.set("store", store);
   const provider = p.provider?.trim();
   if (provider) qs.set("provider", provider);
+  if (isReviewRequestFilter(p.reviewRequest)) qs.set("review_request", p.reviewRequest);
   const from = p.from && DATE_RE.test(p.from) ? p.from : "";
   const to = p.to && DATE_RE.test(p.to) ? p.to : "";
   if (from || to) {
-    qs.set("date_field", p.dateField === "ship" ? "ship" : "paid");
+    // "requested" mà không lọc Xin review → Mera ngầm review_request=sent.
+    qs.set("date_field", parseDateField(p.dateField));
     if (from) qs.set("from", from);
     if (to) qs.set("to", to);
   }
@@ -240,6 +266,8 @@ export interface TrackingUrlState {
   provider: string;
   /** `?rating=` — chỉ có nghĩa ở tab DELIVERED_REVIEWED (parse bỏ ở tab khác); null = mọi số sao. */
   rating: ReviewStars | null;
+  /** `?review_request=` — ô "Xin review"; '' = Tất cả. */
+  reviewRequest: DeliveryReviewRequestFilter | "";
   dateField: DeliveryDateField;
   from: string;
   to: string;
@@ -254,6 +282,7 @@ export function parseTrackingUrl(sp: URLSearchParams): TrackingUrlState {
   const from = sp.get("from") || "";
   const to = sp.get("to") || "";
   const rating = Number(sp.get("rating"));
+  const reviewRequest = sp.get("review_request");
   return {
     project: sp.get("project") || "",
     status: isTrackingTab(status) ? status : "",
@@ -261,7 +290,8 @@ export function parseTrackingUrl(sp: URLSearchParams): TrackingUrlState {
     q: sp.get("q") || "",
     store: sp.get("store") || "",
     provider: sp.get("provider") || "",
-    dateField: sp.get("date_field") === "ship" ? "ship" : "paid",
+    reviewRequest: isReviewRequestFilter(reviewRequest) ? reviewRequest : "",
+    dateField: parseDateField(sp.get("date_field")),
     from: DATE_RE.test(from) ? from : "",
     to: DATE_RE.test(to) ? to : "",
     page: Number.isInteger(page) && page > 0 ? page : 1,
@@ -278,8 +308,9 @@ export function trackingUrlSearch(s: TrackingUrlState): URLSearchParams {
   if (s.store) sp.set("store", s.store);
   if (s.provider) sp.set("provider", s.provider);
   if (s.status === DELIVERED_REVIEWED && isReviewStars(s.rating)) sp.set("rating", String(s.rating));
+  if (isReviewRequestFilter(s.reviewRequest)) sp.set("review_request", s.reviewRequest);
   if (s.from || s.to) {
-    if (s.dateField === "ship") sp.set("date_field", "ship");
+    if (s.dateField !== "paid") sp.set("date_field", s.dateField);
     if (s.from) sp.set("from", s.from);
     if (s.to) sp.set("to", s.to);
   }
@@ -298,6 +329,7 @@ export function trackingListParams(s: TrackingUrlState, withPage = true): Delive
     q: s.q,
     store: s.store,
     provider: s.provider,
+    reviewRequest: s.reviewRequest,
     dateField: s.dateField,
     from: s.from,
     to: s.to,

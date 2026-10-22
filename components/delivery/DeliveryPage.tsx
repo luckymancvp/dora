@@ -15,6 +15,7 @@ import { DeliveryTable } from "@/components/delivery/DeliveryTable";
 import { DeliveryToolbar } from "@/components/delivery/DeliveryToolbar";
 import { RequestReviewsDialog } from "@/components/delivery/RequestReviewsDialog";
 import { ReviewRequestSettingsDialog } from "@/components/delivery/ReviewRequestSettingsDialog";
+import { ReviewRequestTemplatesDialog } from "@/components/delivery/ReviewRequestTemplatesDialog";
 import {
   DeliveryApiError,
   fetchDeliveryList,
@@ -210,7 +211,7 @@ function DeliveryScreen({ initial }: { initial: TrackingUrlState }) {
   );
 
   // ---- Request reviews (Utils) ----
-  const [reviewDialog, setReviewDialog] = useState<"request" | "settings" | null>(null);
+  const [reviewDialog, setReviewDialog] = useState<"request" | "templates" | "settings" | null>(null);
   const closeReviewDialog = useCallback(() => setReviewDialog(null), []);
   // Gửi tay xong → bỏ chọn.
   const clearSelection = useCallback(() => setSelection(new Map()), []);
@@ -278,6 +279,7 @@ function DeliveryScreen({ initial }: { initial: TrackingUrlState }) {
           exportDisabled={data != null && total === 0}
           onExport={handleExport}
           onRequestReviews={openRequestReviews}
+          onReviewTemplates={() => setReviewDialog("templates")}
           onReviewSettings={() => setReviewDialog("settings")}
           selectedCount={selection.size}
         />
@@ -352,6 +354,8 @@ function DeliveryScreen({ initial }: { initial: TrackingUrlState }) {
         projects={projects.data}
         onSent={clearSelection}
       />
+
+      <ReviewRequestTemplatesDialog open={reviewDialog === "templates"} onClose={closeReviewDialog} />
 
       <ReviewRequestSettingsDialog
         open={reviewDialog === "settings"}

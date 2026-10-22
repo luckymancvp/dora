@@ -82,3 +82,68 @@ Kiểm lại: `npx tsc --noEmit` sạch; eslint scratchpad (typescript-eslint + 
 - `npx tsc --noEmit` sạch; eslint scratchpad 0 lỗi (gồm cả types + proxy service).
 
 - QA R2-3: `manualWarnings` — đơn `review_request.status === "sending"` → cảnh báo kind FE-only `"sending"` "Đang gửi — sẽ bị bỏ qua" (`MANUAL_WARNING_LABEL`), KHÔNG còn tính là "đã xin review" (bỏ `sending` khỏi `isRequested`). `ManualWarning.kind` = `already_requested | reviewed | sending`. tsc sạch, eslint scratchpad 0 lỗi.
+
+## §11 Nhiều mẫu tin (2026-10-22) — thư viện mẫu dùng chung
+
+Type tiêu thụ (backend đã thêm trong `lib/types/delivery.ts`): `ReviewRequestTemplate`, `ReviewRequestTemplatesResponse`, `ReviewRequestTemplateInput`, `ReviewRequestTemplateDeleteResult`, `ReviewRequestPreviewRequest`, `ReviewRequestRunRequest`, `ReviewRequestSendRequest.template_id`, `REVIEW_REQUEST_DEFAULT_TEMPLATE_ID`, `REVIEW_REQUEST_TEMPLATE_TITLE_MAX`.
+
+### Hook (`lib/hooks/useDelivery.ts`)
+| Hook | Gọi | queryKey / invalidation | Cast |
+|---|---|---|---|
+| `useReviewRequestTemplates()` | GET `/api/delivery/review-requests/templates` | `["delivery","review-requests","templates"]`, staleTime 60s | `ReviewRequestTemplatesResponse` |
+| `useCreateReviewRequestTemplate()` | POST `/templates` body `ReviewRequestTemplateInput` | thành công: vá cache (thêm item) + invalidate templates; lỗi: invalidate | `ReviewRequestTemplate` |
+| `useUpdateReviewRequestTemplate()` | PUT `/templates/:id` (vars `{id,title,content}`, body chỉ `{title,content}`) | vá cache (thay item) + invalidate; lỗi: invalidate | `ReviewRequestTemplate` |
+| `useDeleteReviewRequestTemplate()` | DELETE `/templates/:id` | vá cache (bỏ item) + invalidate; lỗi: invalidate | `ReviewRequestTemplateDeleteResult` |
+| `useReviewRequestPreview(projectId, templateId, enabled)` | POST `/preview` body `ReviewRequestPreviewRequest {project_id, template_id}` | key thêm `templateId`: `[...,"preview",projectId,templateId]` | `ReviewRequestPreview` |
+| `useRunReviewRequests()` | POST `/run` — mutate nhận `ReviewRequestRunRequest {project_id, template_id}` | như cũ | `ReviewRequestRunResult` |
+| `useSaveReviewRequestSettings()` | PUT `/settings` — FE chỉ gửi `{project_id, max_days}` (không gửi `template`) | như cũ | `ReviewRequestSettings` |
+
+### Helper (`lib/delivery/reviewRequest.ts`)
+- `REVIEW_TEMPLATE_ERROR_LABEL` (code → câu VN): `duplicate_title`, `invalid_title`, `invalid_template`, `system_template`, `template_not_found`, `template_required`. `reviewRequestErrorText` ưu tiên nhãn theo `body.code`; invalid_template vẫn nối `unknown_vars`, không có biến (vd quá dài) → nối câu gốc Mera.
+- `pickReviewTemplate(items, id)`: id còn trong thư viện → mẫu đó; không → `is_system`/`default` → item đầu → null.
+- `reviewTemplateTitleError(title, items, selfId)`: bắt buộc, ≤ 100, không trùng (trim + lowercase) mẫu khác.
+- `reviewRequestVariables` nhận `Pick<ReviewRequestTemplatesResponse,"variables">` (settings không còn là nguồn biến).
+
+### Component
+- `DeliveryUtilsDropdown` + `DeliveryToolbar` + `DeliveryPage`: mục mới "Mẫu tin Request reviews" (`onReviewTemplates`) → `reviewDialog = "templates"`.
+- `ReviewRequestTemplatesDialog.tsx` (mới): danh sách trái (title, badge "Hệ thống", updated_by · updated_at) + form phải (title ≤100 có đếm, content ≤2000, chèn biến tại con trỏ, kiểm biến B5 `invalidTemplateTokens`, xem trước dữ liệu mẫu). `default` (`is_system`) chỉ xem. Thêm / Lưu / Xoá (`confirm`) / Huỷ thay đổi; bản nháp chưa lưu → `confirm` khi đổi mẫu / đóng (Esc, overlay, X). PUT trả `template_not_found` → giữ nội dung thành form "Mẫu mới".
+- `ReviewRequestModal.tsx`: prop `wide` (max-w-4xl); thêm `ReviewTemplateSelect` (luôn có 1 mẫu chọn, mặc định `default`) và `ReviewTemplatePreview` (render `REVIEW_PREVIEW_SAMPLE_VARS`).
+- `ReviewRequestSettingsDialog`: chỉ còn `max_days` (bỏ mẫu / chèn biến / xem trước), ghi chú mẫu sửa ở "Mẫu tin Request reviews".
+- `RequestReviewsDialog` — tự động: select mẫu bắt buộc (mặc định `default`) + "Nội dung sẽ gửi" (xem trước) luôn hiện trên phần preview; preview + run gửi `template_id`. Gửi tay: select mẫu → đổ `content` vào textarea (sửa được; đang soạn khác mẫu cũ → `confirm` trước khi thay), placeholder = nội dung mẫu đang chọn; luôn gửi `template_id`, thêm `message` khi textarea khác rỗng. Bỏ `useReviewRequestSettings` khỏi gửi tay.
+
+### Field component đọc (QA)
+- `ReviewRequestTemplate`: `id`, `title`, `content`, `is_system`, `created_by`, `updated_by`, `updated_at`.
+- `ReviewRequestTemplatesResponse`: `items`, `variables`.
+- `DeliveryApiErrorBody`: `code`, `error`, `unknown_vars`, `shop`.
+- Settings: `max_days`, `is_default`, `updated_by`, `updated_at` (không còn đọc `template` / `default_template` / `variables`).
+- `ReviewRequestPreview.template_id` không đọc.
+
+### Kiểm tra
+- `npx tsc --noEmit` sạch; eslint scratchpad (typescript-eslint recommended + react-hooks) 0 lỗi trên 9 file đã sửa.
+
+## §13 Bỏ đơn khỏi danh sách gửi tay (2026-10-22)
+
+- Type: `ReviewRequestSendRequest.exclude_order_ids?: string[]` (backend đã thêm).
+- `lib/delivery/reviewRequest.ts`: helper thuần `buildManualSendPlan({selectionIds, rows, excluded, templateId, message, projectId})` → `{request, total, included}`. Mã có đơn mà mọi đơn bị bỏ ⇒ bỏ khỏi `ids`; mã còn ≥1 đơn ⇒ giữ + đơn bị bỏ của mã vào `exclude_order_ids` (vắng khi rỗng); mã không có dòng (trang khác) / không đơn ⇒ giữ. `total`/`included` đếm order_id khác nhau trên dòng đang có. Smoke test (tsx): ids a(1,2) b(3) c() z(off-page), bỏ {2,3} → `ids [a,c,z]`, `exclude_order_ids [2]`, 1/3.
+- `SKIP_REASON_LABEL.excluded` = "Đã bỏ khỏi danh sách".
+- `RequestReviewsDialog` gửi tay: checkbox mỗi đơn (mặc định tích; khoá theo `order_id` như API), bỏ tích → dòng mờ + gạch; đầu danh sách "Gửi N / M đơn" + "Chọn tất cả / Bỏ chọn tất cả"; nút "Gửi N đơn" (+ "k mã trang khác" khi có), disable khi `ids` rỗng hoặc N = 0 mà không có mã ở trang khác; body = `plan.request`. Cảnh báo theo đơn giữ nguyên. Exclusion reset khi mở lại (body mount lại mỗi lần mở).
+- Field đọc thêm: `orders[].order_id` (đã có). tsc sạch; eslint scratchpad 0 lỗi.
+- Follow-up: toast kết quả gửi tay không liệt kê `skipped` reason "excluded"; chỉ ghi chú trung tính "Đã bỏ N đơn khỏi danh sách" (description của toast thành công, hoặc của toast "Không xếp hàng được tin nào" khi không còn lý do khác). tsc + eslint sạch.
+
+## Sửa theo QA "Nhiều mẫu tin — 2026-10-22" (MT-1, MT-3, MT-4, MT-6, MT-9d)
+
+- **MT-1** `ReviewRequestSettingsDialog`: PUT gửi `{project_id, max_days}` + `template` NGUYÊN VĂN khi GET settings trả `template` là chuỗi (Mera cũ không xoá mẫu riêng của project; Mera mới bỏ qua). Route đã chuyển tiếp sẵn.
+- **MT-3** `pickReviewTemplate` chỉ tìm đúng id (không rơi về default). `ReviewTemplateSelect`: id không còn trong thư viện → option "(đã xoá) <id>" + câu "Mẫu đang chọn đã bị xoá — chọn mẫu khác". Tự động: giữ id, không gọi preview, ẩn số liệu/nút "Xác nhận gửi" (handleRun cũng chặn). Gửi tay: giữ id, chỉ cho gửi khi ô soạn có nội dung (placeholder báo mẫu đã xoá). Hook: `useRefetchTemplatesOnNotFound` — preview (trong queryFn), run, send (`onError`) gặp 404 `template_not_found` → invalidate `["delivery","review-requests","templates"]`.
+- **MT-9d** quản lý mẫu: mẫu đang mở bị xoá ở nơi khác → thay form bằng cảnh báo + "Giữ thành mẫu mới" (khi có bản nháp, chuyển sang form mới giữ nội dung) / "Bỏ bản nháp" | "Đóng mẫu".
+- **MT-4 + MT-6** `normalizeReviewTemplateTitle` = `normalize("NFC")` → `/\s+/g → " "` → trim; `reviewTextLength` = `[...t].length` (code point). `reviewTemplateTitleError` kiểm trên bản chuẩn hoá: rỗng, > 100 code point, trùng (lowercase) mẫu khác hoặc tiêu đề giữ chỗ `REVIEW_DEFAULT_TEMPLATE_TITLE = "Mẫu mặc định"`. Ô tiêu đề bỏ `maxLength`; bộ đếm theo code point của bản chuẩn hoá; POST/PUT gửi tiêu đề đã chuẩn hoá. Smoke test (tsx): 😀×100 OK, 😀×101 lỗi, "a"+150 dấu cách+"b" OK, "  mẫu   mặc\tđịnh " trùng, "Mẫu mặc định" NFD trùng.
+- MT-8 (độ dài nội dung theo UTF-16 `maxLength`) chưa đổi — QA ghi chú, chỉ chặt hơn Go.
+- tsc sạch; eslint scratchpad 0 lỗi (6 file).
+
+## §14 Lọc "Xin review" + xem đủ danh sách chạy tự động (2026-10-22)
+
+Type (backend): `DeliveryDateField` thêm `"requested"`, `DeliveryReviewRequestFilter = sent|none|pending|failed`, `DeliveryTrackingListParams.reviewRequest`, `ReviewRequestPreview.sample_truncated`.
+
+- **(a)** `RequestReviewsDialog` chạy tự động: bỏ bảng 20 dòng; `CandidateList` hiện TOÀN BỘ `preview.sample`, ảo hoá bằng `@tanstack/react-virtual` (dòng 28px, vùng cuộn max-h-72, header ngoài vùng cuộn). Tiêu đề "Đơn sẽ gửi (N đơn)"; `sample_truncated` → "(hiện 5000 / N đơn)" + ghi chú "Xác nhận gửi" vẫn xếp hàng đủ N. Field đọc: `sample[].order_id/shop_name/store/tracking_code/delivered_at/has_conversation`, `candidates`, `sample_truncated`.
+- **(b)** `lib/delivery/deliveryTracking.ts`: `REVIEW_REQUEST_FILTER_OPTIONS`, `isReviewRequestFilter`, `parseDateField` (paid|ship|requested, lạ → paid), `DATE_FIELD_OPTIONS`. `TrackingUrlState.reviewRequest`; `parseTrackingUrl` đọc `?review_request=` (lạ → ''), `date_field` qua `parseDateField`; `trackingUrlSearch` ghi `review_request` + `date_field` khác paid (khi có from/to như cũ); `trackingListParams` truyền `reviewRequest` (export XLSX dùng chung → cùng bộ lọc); `buildDeliveryTrackingQuery` set `review_request` khi hợp lệ, `date_field` = paid|ship|requested. Smoke test tsx: `review_request=pending&date_field=requested&from=…` giữ nguyên URL ↔ API; giá trị lạ bị bỏ.
+- `DeliveryFilters`: select "Xin review" (Xin review: Tất cả / Đã xin review / Chưa xin review / Đang chờ gửi / Gửi lỗi · Chưa xác nhận), viền `border-primary text-primary` khi đang lọc như ô Review; select loại ngày thêm "Ngày xin review". Đổi lọc → về trang 1 (logic `update` sẵn có).
+- tsc sạch; eslint scratchpad 0 lỗi, 1 warning `react-hooks/incompatible-library` ở `useVirtualizer` (giống ConversationList/MessageList hiện có).

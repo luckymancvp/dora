@@ -11,10 +11,14 @@ import {
   DELIVERED_REVIEWED,
   DELIVERED_REVIEWED_HINT,
   DELIVERED_REVIEWED_LABEL,
+  DATE_FIELD_OPTIONS,
+  REVIEW_REQUEST_FILTER_OPTIONS,
   REVIEW_STAR_OPTIONS,
   deliveredRatingCountKey,
   isDeliveredReviewTab,
+  isReviewRequestFilter,
   isReviewStars,
+  parseDateField,
   trackingTabCount,
   type TrackingUrlState,
 } from "@/lib/delivery/deliveryTracking";
@@ -30,7 +34,8 @@ const REVIEW_OPTIONS = [
 ] as const;
 
 /**
- * Thanh lọc: tìm (q) · shop · fulfill · review (+ theo sao) · ngày Paid/Ship từ–đến · Tải lại.
+ * Thanh lọc: tìm (q) · shop · fulfill · review (+ theo sao) · Xin review · ngày Paid/Ship/Xin review từ–đến
+ * · Tải lại.
  * `data` = response list hiện tại (nguồn option shop/fulfill + số đếm review); undefined khi chưa tải.
  */
 export function DeliveryFilters({
@@ -177,16 +182,44 @@ export function DeliveryFilters({
         </optgroup>
       </select>
 
+      <select
+        value={filters.reviewRequest}
+        onChange={(e) => {
+          const v = e.target.value;
+          onChange({ reviewRequest: isReviewRequestFilter(v) ? v : "" });
+        }}
+        className={cn(selectClass, "min-w-[170px]", filters.reviewRequest && "border-primary text-primary")}
+        title={
+          REVIEW_REQUEST_FILTER_OPTIONS.find((o) => o.value === filters.reviewRequest)?.hint ??
+          "Lọc theo tin xin review (Request reviews) của đơn trong phạm vi đang xem"
+        }
+        aria-label="Lọc theo xin review"
+      >
+        <option value="">Xin review: Tất cả</option>
+        {REVIEW_REQUEST_FILTER_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+
       <div className="flex items-center gap-2 text-sm">
         <select
           value={filters.dateField}
-          onChange={(e) => onChange({ dateField: e.target.value === "ship" ? "ship" : "paid" })}
+          onChange={(e) => onChange({ dateField: parseDateField(e.target.value) })}
           className={selectClass}
-          title="Lọc theo ngày thanh toán hay ngày gửi hàng"
+          title={
+            filters.dateField === "requested"
+              ? "Ngày gửi tin xin review (chưa chọn ô Xin review = chỉ mã đã xin review)"
+              : "Lọc theo ngày thanh toán, ngày gửi hàng hay ngày xin review"
+          }
           aria-label="Loại ngày"
         >
-          <option value="paid">Ngày Paid</option>
-          <option value="ship">Ngày Ship</option>
+          {DATE_FIELD_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
         </select>
         <input
           type="date"

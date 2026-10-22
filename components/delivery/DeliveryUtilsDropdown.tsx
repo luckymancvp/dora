@@ -1,19 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Send, Settings, Wrench } from "lucide-react";
+import { FileText, Send, Settings, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 /**
  * Nút "Utils" màn Giao hàng (khuôn Mera `features/orders/components/UtilsDropdown.tsx`, plan
- * request-reviews §6): menu thuần Tailwind, đóng khi click ra ngoài / Esc / chọn mục.
+ * request-reviews §6, §11): menu thuần Tailwind, đóng khi click ra ngoài / Esc / chọn mục.
  */
 export function DeliveryUtilsDropdown({
   onRequestReviews,
+  onReviewTemplates,
   onReviewSettings,
   selectedCount,
 }: {
   onRequestReviews: () => void;
+  /** §11: quản lý thư viện mẫu tin dùng chung. */
+  onReviewTemplates: () => void;
   onReviewSettings: () => void;
   /** Số mã đang chọn — > 0 thì "Request reviews" là gửi tay cho các mã đó. */
   selectedCount: number;
@@ -71,6 +74,15 @@ export function DeliveryUtilsDropdown({
                 {selectedCount.toLocaleString()}
               </span>
             )}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={pick(onReviewTemplates)}
+            className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm text-foreground transition-colors hover:bg-muted"
+          >
+            <FileText className="h-4 w-4" />
+            Mẫu tin Request reviews
           </button>
           <button
             type="button"

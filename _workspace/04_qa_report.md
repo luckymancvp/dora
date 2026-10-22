@@ -196,3 +196,201 @@ Phạm vi: diff chưa commit ở `mera-fulfill-backend` (plan §10 là hành vi 
 1. R2-1 (Mera BE, nhỏ: thêm điều kiện `mode`/thời điểm + 1 test).
 2. R2-2, R2-3 (FE, vài dòng).
 3. R2-4, R2-5 khi chạy nhiều replica / nhiều shop Dora.
+
+---
+
+## Nhiều mẫu tin — 2026-10-22 (plan §11/§12, 4 repo, chưa commit)
+
+Phạm vi: `mera-fulfill-backend` (nguồn chuẩn), `mera-admin-backend`, `mera-fulfill-frontend` (bỏ qua OrderTable/OrdersPage), dora-1. Đọc theo `git diff`. Không sửa code.
+
+### N.1 Kiểm chứng bằng thực thi
+| Lệnh | Kết quả |
+|---|---|
+| dora-1 `npx tsc --noEmit` (chạy 2 lần, lần cuối trên cây mới nhất có cả §13) | 0 lỗi |
+| fulfill `go build ./...` | OK |
+| fulfill `go vet` services/controllers/models | 1 cảnh báo có từ trước: `dora_api_service.go:76` (rawConvID). Không thuộc diff |
+| fulfill `go test ./internal/services/ ./internal/controllers/ -run 'ReviewRequest/Template'` | ok |
+| fulfill `MERA_LOCAL_MONGO=1` `ReviewRequestTemplates*_Local`, `ReviewRequests_Local` | PASS |
+| fulfill overlay QA (`go test -overlay`, không ghi file vào repo): 8 replica cùng import 20 settings trùng tên × 5 vòng × 3 lần | docs = distinct `legacy_settings_id` = 20. Không nhân bản, không mất mẫu |
+| admin `go build ./...`, `go vet ./...`, `go test` models + services | OK |
+| Mera FE `npx tsc -b` | 0 lỗi |
+| Mera FE `vitest` (reviewRequest, reviewRequestApi, RequestReviewsDialog, ReviewRequestSettingsDialog, ReviewTemplatesDialog, TriggerModal) | 6 file, 88 test pass |
+| Parity: 21 tiêu đề + 27 nội dung, chạy qua hàm thật của Go (`validateReviewTemplateInput`) / dora-1 / Mera FE (esbuild bundle) | xem N.3 |
+
+Script: `C:\Users\admin\AppData\Local\Temp\claude\d--Pamo-dora-1\85bb8946-7825-49da-a75c-e22e0561cf36\scratchpad\parity\multi\` (`cases.mjs`, `zz_qa_overlay_test.go` + `overlay.json`, `dora_entry.ts`, `mera_entry.ts`, `compare.mjs`).
+
+### N.2 So khớp chéo theo seam (✓ = khớp)
+| Seam | Go (nguồn chuẩn) | dora-1 proxy / type | dora-1 FE | Mera FE |
+|---|---|---|---|---|
+| T1 list | `{items:[{id,title,content,is_system,created_by,updated_by,updated_at}],variables}`; `items[0]=default` (`updated_at:null`, `created_by:"system"`) | `normalizeTemplate` đủ 7 key, bỏ item không có id ✓ | đọc id/title/content/is_system/updated_by/updated_at ✓ | `normalizeTemplateList` + tự thêm `default` nếu thiếu, đưa system lên đầu ✓ |
+| T2 POST/PUT | 200 trả view ở gốc. 400 `invalid_body`/`invalid_title`/`duplicate_title` (gồm "Mẫu mặc định" mọi kiểu hoa thường)/`invalid_template`+`unknown_vars`; PUT 403 `system_template`, 404 `template_not_found` (id không phải hex cũng vậy) | `callMera` giữ nguyên status + body ✓; thiếu id → 502 ✓ | nhãn VN cho 6 code ✓; `template_not_found` khi sửa → giữ bản nháp thành mẫu mới ✓ | nhãn cho 5 code, `invalid_template` dùng message BE (tiếng Việt) ✓; lỗi tiêu đề hiện ngay dưới ô ✓ |
+| T3 DELETE | `{ok:true}` · 403 · 404 | luôn `{ok:true}` ✓ | ✓ | ✓ |
+| T4 preview | `template_id` tuỳ chọn ("" → default); trả thêm `template_id` | "" → bỏ field ✓; `template_id` vắng → "" ✓ | queryKey có `templateId` ✓ | key có `templateId` ✓ |
+| T5 run | `template_id` bắt buộc (400 `template_required`), 404 `template_not_found`; thứ tự body → project → required → 503 → not_found | route tự chặn với cùng code ✓ | luôn gửi id (mặc định `default`) ✓ | luôn gửi; chặn khi mẫu đã xoá ✓ |
+| T6 send | message (trim) > template_id > default; `edited` khi message ≠ nội dung mẫu (so sau TrimSpace); mẫu đã xoá không chặn khi có message | bỏ field rỗng, gửi cả hai ✓ | `buildManualSendPlan`: luôn `template_id` + `message` đã trim nếu có ✓ | `buildManualSendRequest` ✓ |
+| T7 settings | chỉ `max_days`; `template` client cũ gửi bị bỏ qua; response giữ `template`=`default_template`=nội dung default | `template?` chỉ chuyển tiếp nếu client gửi (FE mới không gửi) ✓ | PUT `{project_id,max_days}` (`ReviewRequestSettingsDialog.tsx:96`) ✓ | PUT `{project_id,max_days}` (`ReviewRequestSettingsDialog.tsx:79`) ✓ |
+| T8 trigger | internal: body rỗng / `{}` / id trắng → 400 `template_required`; JSON hỏng → `invalid_body`; mẫu đã xoá → 404 (controller test :159-178) | — | — | TriggerModal bắt buộc chọn; trigger cũ chọn sẵn `default` (:131); mẫu đã xoá → "(đã xoá)" + chặn lưu ✓. Admin: lưu bắt buộc `template_id` (trim, ≤64); executor gửi `{template_id}` JSON cho cả project lẫn `dora`; trigger cũ → `"default"` ✓ |
+
+### N.3 Parity validate (cùng input chạy qua cả 3 bên)
+- **Biến B5:** 27/27 nội dung khớp nhau ở kết luận nhận/từ chối giữa Go, dora-1 và Mera FE (lỗi ngoặc lẻ R2-2 đã được sửa). Chỉ khác cách liệt kê token: với `{{buyer_name}` dora-1 hiện `{`, Go trả `{{buyer_name}`. Không ảnh hưởng.
+- **Tiêu đề:** Mera FE khớp Go 21/21. dora-1 lệch 3 case (MT-4).
+- **Độ dài nội dung:** Go đếm rune sau khi trim. Mera FE đếm rune chưa trim. dora-1 dùng `maxLength` của textarea, tính theo đơn vị UTF-16. Hai FE chỉ chặt hơn Go, không cho qua thứ Go từ chối (MT-8).
+
+### N.4 Findings
+
+**MT-1 — Chặn merge (điều kiện triển khai) · dora-1 + Mera FE vs Mera BE cũ · mẫu cũ của project bị xoá vĩnh viễn**
+- Bằng chứng: Mera BE ở HEAD là `review_request_controller.go:117-121` (`Template string json:"template"`) và `review_request_service.go:208-221` (`$set template: ""` khi vắng). Hai FE mới chỉ gửi `{project_id,max_days}` (dora-1 `components/delivery/ReviewRequestSettingsDialog.tsx:96`; Mera FE `src/pages/tracking/ReviewRequestSettingsDialog.tsx:79`).
+- Kịch bản: FE mới lên trước Mera BE §11, người dùng lưu số ngày → BE cũ ghi `template:""`. Khi BE §11 lên, bước nhập (`importLegacyTemplates`, chỉ lấy template khác rỗng) không còn gì để nhập. Mẫu riêng của project mất hẳn. Chỉ xảy ra nếu HEAD hiện tại của Mera đã chạy production và có project đã cài mẫu riêng.
+- Sửa (chọn 1): (a) chốt thứ tự deploy ở N.5. (b) Rẻ hơn: hai FE gửi kèm `template: settings.template` khi GET có trả field này. Mera mới bỏ qua; Mera cũ ghi lại đúng mẫu đang có. dora-1 route đã sẵn chuyển tiếp (`settings/route.ts:56`), `normalizeSettings` giữ `template` khi là chuỗi. (c) Backup `review_request_settings` trước khi deploy.
+
+**MT-2 — Nên sửa (cần xác nhận dữ liệu prod) · admin · trigger cũ đổi nội dung tin mà không báo**
+- Bằng chứng: `mera-admin-backend/internal/services/trigger_executor.go:165-174` và `internal/models/trigger.go:101-103`. Comment ghi "đúng hành vi trước đây", nhưng trước §11, trigger chạy theo `review_request_settings.template` của từng project (HEAD `loadSettings`). Từ giờ trigger cũ luôn gửi mẫu hệ thống.
+- Ảnh hưởng: project có mẫu riêng + trigger `request_reviews` cũ: tin tự động gửi buyer đổi sang mẫu mặc định mà không ai biết.
+- Sửa: kiểm prod trước (đếm settings có `template` ≠ "" và trigger `request_reviews` chưa có `template_id`). Nếu có cả hai: sau khi chạy bước nhập, cập nhật `template_id` của trigger thành mẫu "Mẫu cũ — <project>" (trigger 1 project), hoặc tắt trigger và báo admin chọn mẫu.
+
+**MT-3 — Nên sửa · dora-1 FE · mẫu đang chọn bị xoá thì lặng lẽ rơi về "Mẫu mặc định"**
+- Bằng chứng: `lib/delivery/reviewRequest.ts:326` (`pickReviewTemplate` → default). Dùng ở `components/delivery/RequestReviewsDialog.tsx:142-143` (gửi tay) và `:395-403` (chạy tự động: `run` gửi `effectiveTemplateId`). Mera FE thì hiện "(đã xoá) …" và chặn chạy (`ReviewTemplateSelect.tsx:29,48,53`; `RequestReviewsDialog.tsx` `templateMissing`). Lỗi 404 của run/preview cũng không làm dora-1 tải lại thư viện (`useRunReviewRequests` chỉ có `onSuccess`, `lib/hooks/useDelivery.ts:295`), trong khi Mera FE có tải lại (`onTemplateError`).
+- Kịch bản: người dùng chọn mẫu X, tab khác xoá X, refetch khi focus → select đổi sang default không cảnh báo, "Xác nhận gửi" gửi mẫu mặc định cho cả project. Spec §11 yêu cầu UI 2 bên giống nhau.
+- Sửa: giữ `templateId` đã chọn. Khi không còn trong `items`: hiện option "(đã xoá)", báo lỗi, khoá nút chạy (với gửi tay: khoá khi ô soạn trống). Thêm `onError` → `invalidateQueries(RR_TEMPLATES_KEY)` khi `template_not_found`.
+
+**MT-4 — Nên sửa · dora-1 FE · kiểm tiêu đề không theo luật Go**
+- Bằng chứng: `lib/delivery/reviewRequest.ts:348-354` (chỉ `trim()`, `.length` UTF-16, so trùng không gộp khoảng trắng); `components/delivery/ReviewRequestTemplatesDialog.tsx:256` (`maxLength` 100 UTF-16).
+- Kết quả parity: `"😀"×100` thì Go OK, dora-1 chặn. `"a"+150 dấu cách+"b"` thì Go OK ("a b"), dora-1 chặn và ô nhập cũng không cho gõ. `"  mẫu   mặc\tđịnh "` thì Go trả `duplicate_title`, dora-1 cho qua (server vẫn chặn, nhãn hiện đúng).
+- Sửa: chép `normalizeReviewTemplateTitle` (`/\s+/g→' '` + trim) và đếm `[...t].length` như Mera FE `src/lib/reviewRequest.ts`. So trùng trên bản đã chuẩn hoá. Bỏ `maxLength` (hoặc nới) và để bộ đếm báo lỗi.
+
+**MT-5 — Nên sửa · Mera FE · danh sách trigger hiện "chưa chọn" (đỏ) cho trigger cũ, trong khi admin chạy bằng `default`**
+- Bằng chứng: `src/pages/triggers/TriggersPage.tsx:224-225` + `src/lib/reviewRequest.ts:433`, đối chiếu admin `trigger_executor.go:170-172` và TriggerModal `:131` (chọn sẵn default).
+- Sửa: id vắng thì hiện "Mẫu mặc định (trigger cũ — mở để lưu)". Đi cùng MT-2.
+
+**MT-6 — Ghi chú · Go + 2 FE · tiêu đề không chuẩn hoá Unicode (NFC)**
+- Parity: `"Mẫu mặc định".normalize("NFD")` thì cả 3 bên đều cho qua. Unikey chế độ "Unicode tổ hợp" sinh dạng này, nên có thể tạo tiêu đề nhìn y hệt mẫu hệ thống hoặc mẫu khác. Chỗ sửa: `review_request_library.go:79-81` (`NormalizeReviewTemplateTitle`), thêm `norm.NFC` trước `title_lower`/`EqualFold`. FE thêm `.normalize('NFC')`.
+
+**MT-7 — Ghi chú · fulfill BE · chi tiết bước nhập**
+- Đuôi tiêu đề khi id ≤6 ký tự (`dora`) là `(dora)`, không có `#` như spec (`review_request_library.go:363-366`).
+- Khi nhiều replica chạy cùng lúc, log "not imported: title taken" (:386) in ra cả khi replica khác đã nhập xong doc đó. Chỉ là log nhiễu: test race không mất mẫu nào.
+- Tên project tra bằng `Authorization` của request đầu tiên. Internal key của dora-1 vẫn được admin chấp nhận (cùng đường `AllowedProjectsForRequest`). Nếu tra lỗi, tiêu đề dùng id hex và giữ luôn như vậy (đổi tên tay được).
+- Mẫu cũ có biến sai (B5) bị bỏ qua, chỉ ghi log. Doc settings không bị sửa. Đều đúng §12.
+
+**MT-8 — Ghi chú · 2 FE · đếm độ dài nội dung khác Go** (giống R2-6)
+- Mera FE `src/lib/reviewRequest.ts:319` đếm cả khoảng trắng đầu/cuối: nội dung 2000 ký tự kèm dấu cách bao quanh thì Go OK, FE chặn. dora-1 `maxLength` theo UTF-16: nội dung có emoji (2000 rune = 4000 đơn vị) không nhập đủ được. FE chỉ chặt hơn.
+
+**MT-9 — Ghi chú · nhỏ**
+- (a) Cả 2 FE bỏ `template_id` trong response `run` (dora-1 `ReviewRequestRunResult`, Mera FE `reviewRequestApi.ts:173`). Hiện không ai dùng.
+- (b) Cờ `edited` có thể bật sai khi nội dung mẫu chứa `\r\n` (tạo qua API): textarea đổi thành `\n` nên `message ≠ content`.
+- (c) Mera FE: preview trả 404 `template_not_found` không tải lại thư viện, chỉ send/run tải lại.
+- (d) dora-1 `ReviewRequestTemplatesDialog.tsx:70`: mẫu đang sửa bị xoá ở nơi khác thì `current` rơi về default (chỉ đọc), nhưng bản nháp vẫn hiện trong khung chỉ đọc.
+
+### N.5 Thứ tự deploy an toàn
+1. **mera-admin-backend.** Fulfill cũ bỏ qua body `{template_id}`, trigger vẫn chạy như cũ. Rủi ro trong lúc chờ: Mera FE cũ không lưu được trigger `request_reviews` (admin trả 400 "template_id là bắt buộc"). Đừng sửa trigger cho tới bước 2.
+2. **mera-fulfill-backend + mera-fulfill-frontend cùng một đợt** (BE trước FE vài phút nếu không lên đồng thời được). Trước đó backup `review_request_settings` và làm bước kiểm prod của MT-2. Nếu FE lên trước BE: MT-1 (mất mẫu) và route `/templates` trả 404.
+   - Nếu fulfill BE lên trước admin: mọi trigger `request_reviews` lỗi 400 `template_required` cho tới khi admin lên.
+3. **dora-1** ngay sau bước 2. Trong khoảng chờ, dora-1 cũ:
+   - chạy tự động bị 400 `template_required`;
+   - sửa mẫu ở "Cài đặt" bị Mera bỏ qua, nhưng vẫn báo "Đã lưu";
+   - gửi tay để trống dùng `default` thay vì mẫu project.
+
+   Nếu dora-1 lên trước Mera BE: MT-1 (mất mẫu khi lưu số ngày), thư viện trả 502 `mera_bad_response`, và run gửi `template_id: default` nhưng Mera cũ bỏ qua field này nên thực tế gửi theo mẫu project, trong khi UI hiện "Mẫu mặc định".
+4. Sau bước 2: mở "Mẫu tin Request reviews" một lần để chạy bước nhập, rồi kiểm các mẫu "Mẫu cũ — …" và `delivery_tracking_meta._id = review_request_templates_migrated` (`imported`).
+
+Nếu làm fix MT-1(b) ở cả 2 FE thì thứ tự FE/BE không còn gây mất dữ liệu, chỉ còn các lỗi tạm thời ở trên.
+
+## §13/§14 + MT fixes — 2026-10-22 (vòng cuối trước commit, 4 repo, chưa commit)
+
+Phạm vi: plan §13/§13.1 (bỏ đơn khi gửi tay), §14/§14.1 (preview đủ danh sách + lọc "Xin review" / `date_field=requested`), và các bản sửa MT-1/3/4/5/6/7/9 của mục "Nhiều mẫu tin". Go = nguồn chuẩn. Đọc theo `git diff`, bỏ qua `OrderTable.tsx`/`OrdersPage.tsx`. Không sửa code.
+
+**Kết luận: không có lỗi code chặn merge.** Có 1 điều kiện deploy bắt buộc (X-1). Ngoài ra có 2 mục nên sửa (X-2, X-3) và vài ghi chú.
+
+### X.1 Kiểm chứng bằng thực thi
+| Lệnh | Kết quả |
+|---|---|
+| dora-1 `npx tsc --noEmit` | 0 lỗi |
+| fulfill `go build ./...` | OK |
+| fulfill `go vet` services/controllers/models | chỉ còn cảnh báo cũ `dora_api_service.go:76` (rawConvID), không thuộc diff |
+| fulfill `go test ./internal/services/ ./internal/controllers/ -run 'ReviewRequest\|Template\|Delivery'` | ok / ok |
+| fulfill `MERA_LOCAL_MONGO=1 go test ./internal/services/ -run _Local` (gồm `DeliveryReviewRequestFilter_Local`, `ReviewRequestPreviewAllCandidates_Local`, `ReviewRequestTemplates*_Local`, `ReviewRequests_Local`) | ok (62s) |
+| admin `go build ./...`, `go vet ./...`, `go test` models + services | OK, vet sạch |
+| Mera FE `npx tsc -b` | 0 lỗi |
+| Mera FE `vitest` (reviewRequest, deliveryTracking, reviewRequestApi, RequestReviewsDialog, ReviewRequestSettingsDialog, ReviewTemplatesDialog, TriggerModal) | 7 file, 137 test pass |
+| Parity mới (`scratchpad\parity\s1314\`): 44 tiêu đề (21 cũ + 23 ca khoảng trắng Unicode / NFD / hoa thường), 27 nội dung, 8 cặp so `edited`, 8 kịch bản §13, 10 URL §14. Go chạy qua `go test -overlay` (không ghi file vào repo), 2 FE bundle bằng esbuild | xem X.3 |
+
+Script: `C:\Users\admin\AppData\Local\Temp\claude\d--Pamo-dora-1\85bb8946-7825-49da-a75c-e22e0561cf36\scratchpad\parity\s1314\` (`cases.mjs`, `scen.json`, `zz_qa1314_overlay_test.go` + `overlay.json`, `dora_entry.ts`, `mera_entry.ts`, `compare.mjs`).
+
+### X.2 So khớp chéo theo seam (✓ = khớp)
+| Seam | Go (nguồn chuẩn) | dora-1 proxy / type | dora-1 FE | Mera FE |
+|---|---|---|---|---|
+| §13 body send | `exclude_order_ids` []string, phần tử trắng / sai kiểu / >5000 → 400 `invalid_body` (`review_request_controller.go:224-233`) | route kiểm mảng chuỗi, trim, bỏ rỗng + trùng, `[]` → bỏ field (`send/route.ts:39-58`). Không giới hạn 5000, Mera chặn ✓ | `buildManualSendPlan` (`lib/delivery/reviewRequest.ts:419-443`) | `buildManualSendRequest` (`src/lib/reviewRequest.ts`) + `reviewRequestApi.send` chuyển tiếp field ✓ |
+| §13 khớp đơn | so `refs[].order_id` của ref đang hoạt động trong scope, sau trim, phân biệt hoa thường; id lạ bỏ qua im lặng; 50 mã/shop đếm trên `ids` cả mã có đơn bị loại (`review_request_service.go:764-800`) | — | khoá theo `orders[].order_id`. List view trả nguyên `r.OrderID` (`delivery_tracking_query.go:189`), cùng chuỗi Go so ✓ | như dora-1 ✓ |
+| §13 dựng request | mã mà mọi đơn bị loại: FE phải bỏ khỏi `ids` | — | 8/8 kịch bản giống Mera FE: bỏ mã loại hết đơn, loại 1 phần → `exclude_order_ids`, mã trang khác / mã không đơn giữ nguyên, phân biệt hoa thường, đơn chung 2 mã ✓ | ✓. Khác dora-1 duy nhất ở cách khoá nút (X-4) |
+| §13 kết quả | `skipped[]` reason `excluded`, mỗi cặp (mã, đơn) 1 lần, không ghi ledger | reason pass-through ✓ | toast lọc `excluded` ra, chỉ ghi "Đã bỏ N đơn khỏi danh sách" (`RequestReviewsDialog.tsx:341-357`) ✓ | `splitExcludedSkipped` ở toast + `SendResultView` ✓ |
+| §14a preview | `sample` = mọi ứng viên theo `delivered_at` giảm dần, tối đa 5000, `sample_truncated` (`review_request_service.go:513-533`) | sanitizer `=== true` (`review-request-proxy.ts:215`) ✓ | `CandidateList` ảo hoá, "(hiện 5000 / N đơn)" + ghi chú ✓ | bảng cuộn, "Hiện 5000 / N đơn" ✓ (không ảo hoá, X-6) |
+| §14b param | `review_request` ∈ sent/none/pending/failed, ""/`all` = không lọc, lạ (kể cả `SENT`) → 400 `invalid_review_request`; `date_field` thêm `requested` (`delivery_tracking_controller.go:189-200`) | `LIST_QUERY_KEYS` có `review_request`, `date_field` chuyển tiếp nguyên ✓ | parse URL: lạ → '' / `paid`; chỉ gửi `date_field` khi có from/to ✓ | giống hệt dora-1: 10/10 URL cùng URL + cùng query API (1 URL chỉ khác thứ tự param) ✓ |
+| §14b ngữ nghĩa | `requested` không kèm `review_request` ⇒ ngầm `sent`; `none` + khoảng ngày ⇒ luôn rỗng; `requested` không kèm from/to ⇒ FE không gửi ⇒ không lọc | — | tooltip select ngày báo "chưa chọn Xin review = chỉ mã đã xin review" ✓ | — (X-7) |
+| §14b counts / export | lọc nằm trong `base` ⇒ `counts` + `total` áp dụng, `stores`/`providers` không | — | queryKey `["delivery","list",p]` có `reviewRequest` ✓; export dùng `trackingListParams` ✓ | deps effect list có `filters.reviewRequest`; export (`TrackingPage.tsx:263`) truyền `reviewRequest` ✓ |
+
+### X.3 Parity
+- **Tiêu đề (MT-4/MT-6):** 3 bên giống nhau ở các ca thường gặp: NFD "Mẫu mặc định", gộp tab/xuống dòng/NBSP/U+3000, đếm code point, 😀×100. Còn lệch ở vài ký tự hiếm (ghi chú X-8): Go `unicode.IsSpace` coi U+0085 là khoảng trắng còn U+FEFF thì không, JS `\s` thì ngược lại. Lowercase của `İ` cũng khác (Go `i`, JS `i̇`). FE gửi tiêu đề đã chuẩn hoá và server quyết cuối, nên lệch chỉ làm câu báo lỗi đến từ server thay vì từ client. Không có ca nào FE cho qua mà Go lưu thành tiêu đề trùng.
+- **`edited` (MT-9b):** `\r\n` / `\r` / dấu cách đầu cuối không còn bật `edited`. NFD và NFC vẫn bị coi là khác (nội dung không chuẩn hoá NFC). Chấp nhận được.
+- **§13:** 8 kịch bản cho cùng `ids` / `exclude_order_ids` / N / M ở cả 2 FE, và khớp `zz_review_request_templates_local_test.go:316-345` của Go.
+- **§14 URL:** khớp (bảng trên).
+
+### X.4 Trạng thái các MT của vòng trước
+| MT | Trạng thái | Bằng chứng |
+|---|---|---|
+| MT-1 | **Đã đóng**, có tác dụng phụ (X-3) | dora-1 `ReviewRequestSettingsDialog.tsx:98-101`, Mera FE `ReviewRequestSettingsDialog.tsx:81-84` gửi lại `template` khi GET có field này. BE mới bỏ qua (controller không còn field `Template`). BE cũ ghi lại đúng chuỗi đã đọc |
+| MT-2 | Còn mở (không thuộc danh sách sửa), cần kiểm dữ liệu prod | admin `trigger_executor.go` không đổi |
+| MT-3 | **Đã đóng** | `pickReviewTemplate` không còn rơi về default (`lib/delivery/reviewRequest.ts:325-330`). Có option "(đã xoá)" (`ReviewRequestModal.tsx:165`). Tự động: ẩn preview, khoá chạy (`RequestReviewsDialog.tsx:406-438`). Gửi tay: chỉ gửi được khi ô soạn có nội dung (`:196`). Hook `useRefetchTemplatesOnNotFound` gắn cho preview, run và send |
+| MT-4 | **Đã đóng** | `normalizeReviewTemplateTitle` NFC → `\s+` → trim, đếm code point, bỏ `maxLength`, POST/PUT gửi bản đã chuẩn hoá (`ReviewRequestTemplatesDialog.tsx:132`). Parity khớp Go (trừ X-8) |
+| MT-5 | **Đã đóng** | `reviewTemplateLabel` trả "Mẫu mặc định (trigger cũ)" khi id vắng (`TriggersPage.tsx:225`) |
+| MT-6 | **Đã đóng** | Go `NormalizeReviewTemplateTitle` = `norm.NFC` + `FieldsFunc(unicode.IsSpace)` (`review_request_library.go:83-85`), `go.mod` bỏ `// indirect`. Cả 2 FE `.normalize('NFC')`. Tiêu đề bước nhập cũng qua chuẩn hoá (`:288`) |
+| MT-7 | **Đã đóng** | đuôi `#dora` (`review_request_library.go:373-377`). Log "title taken" chỉ in khi không có doc nào mang `legacy_settings_id` đó (`:399-401`) |
+| MT-8 | Còn mở (ghi chú, cố ý) | dora-1 textarea `maxLength` UTF-16. FE chỉ chặt hơn Go |
+| MT-9a | Còn mở (ghi chú) | cả 2 FE vẫn bỏ `template_id` trong response `run` (dora-1 `ReviewRequestRunResult`, Mera FE `reviewRequestApi.ts:176`). Chưa ai dùng |
+| MT-9b | **Đã đóng** | `reviewComparableContent` (`review_request_library.go:89-91`). Local test có mẫu `\r\n` (`zz_review_request_templates_local_test.go:290`) |
+| MT-9c | **Đã đóng** | Mera FE: preview gặp 404 thì tải lại thư viện (`RequestReviewsDialog.tsx:130-134`) |
+| MT-9d | **Đã đóng** | dora-1 `ReviewRequestTemplatesDialog.tsx:74,234-258` |
+
+### X.5 Findings
+
+**X-1 — Chặn merge (điều kiện deploy, không phải lỗi code) · 2 FE trước fulfill BE · đơn đã bỏ tích vẫn bị gửi tin cho buyer**
+- Bằng chứng: Mera BE ở HEAD đọc body send bằng struct `{IDs, Message, ProjectID}` (`git show HEAD:internal/controllers/review_request_controller.go`, Send) và `ShouldBindJSON` bỏ qua field lạ. Vì vậy FE mới (dora-1 `buildManualSendPlan`, Mera FE `buildManualSendRequest`) gửi `exclude_order_ids` tới BE cũ thì BE xếp hàng **mọi** đơn của các mã còn trong `ids`. Mã đã loại hết đơn thì không sao, vì FE đã bỏ nó khỏi `ids`. Tin đã gửi cho buyer thì không thu hồi được.
+- Các trường hợp lệch khác chỉ gây lỗi tạm thời, không gây hại:
+  - `review_request` gửi tới BE cũ bị bỏ qua: danh sách không lọc dù select đang hiện "Đã xin review".
+  - `date_field=requested` gửi tới BE cũ bị 400 `invalid_date_field`.
+- Sửa: giữ đúng N.5. fulfill BE lên **trước** cả Mera FE lẫn dora-1, hoặc cùng lúc với BE lên trước vài phút. Nếu muốn chặn bằng code: FE kiểm response, gửi `exclude_order_ids` mà `skipped[]` không có dòng `excluded` nào thì cảnh báo "Mera chưa hỗ trợ bỏ đơn". Lúc đó tin đã xếp hàng rồi, nên chỉ để phát hiện. Owner: leader/release.
+
+**X-2 — Nên sửa (cần xác nhận) · fulfill BE · lọc "Xin review" có thể lệch với badge của chính dòng đó**
+- Bằng chứng: bộ lọc lấy ledger theo `project_id ∈ scope` (+ `store` với `dora:<shop>`) (`delivery_review_request_filter.go:47-53`). Badge `orders[].review_request` lại gắn **chỉ theo receipt** (`review_request_service.go:1002-1021`). Ledger có đúng 1 doc mỗi receipt (`models/review_request.go:146`) và `project_id`/`store` bị ghi đè theo lần gửi gần nhất (`reviewDocBase`, `review_request_service.go:550-554`).
+- Kịch bản: receipt R nằm ở ref của 2 phạm vi (vd ref Mera project P và ref `dora`, hoặc 2 project), và lần gửi gần nhất từ phạm vi Q. Khi xem phạm vi P, dòng hiện badge "Đã xin review" nhưng lọc `sent` không ra dòng đó, còn lọc `none` lại ra. Dữ liệu local (485 mã) không có receipt nào dùng chung giữa các project, nên chưa tái hiện được. Cần kiểm prod: `$unwind refs` → nhóm theo `etsy_receipt_id` → đếm receipt có ≥2 `project_id` / `source`.
+- Sửa nếu prod có: lọc ledger theo receipt thay vì theo `project_id`. Lấy tập receipt của các ref trong scope rồi tra ledger `etsy_receipt_id $in` (index unique có sẵn). Hoặc ghi rõ trong plan rằng lọc tính theo "phạm vi đã gửi". Owner: fulfill BE.
+
+**X-3 — Nên sửa (cần xác nhận dữ liệu prod) · fulfill BE · bước nhập tạo bản sao "Mẫu cũ — X" có nội dung y hệt mẫu mặc định**
+- Bằng chứng: BE cũ trả GET `template` = mẫu **đang áp dụng**, tức mẫu mặc định khi project chưa có mẫu riêng (HEAD `loadSettings`). FE cũ (HEAD dora-1 `useState(settings.template)` → PUT `template`; HEAD Mera FE `settings?.template`) điền sẵn chuỗi đó, nên mỗi lần ai đó chỉ đổi `max_days` là doc settings bị ghi nguyên văn mẫu mặc định. Fix MT-1(b) cũng làm y như vậy trong khoảng deploy lệch (FE mới + BE cũ). `importLegacyTemplates` không loại nội dung trùng mẫu mặc định (`review_request_library.go:331-350`), nên mỗi doc như vậy thành 1 mẫu "Mẫu cũ — <project>" giống hệt "Mẫu mặc định". Việc này kéo theo MT-2: nếu map trigger cũ sang mẫu "Mẫu cũ — …" thì cũng chẳng khác gì.
+- Kiểm prod: đếm `review_request_settings` có `TrimSpace(template)` = `DefaultReviewRequestTemplate`.
+- Sửa (rẻ): trong `importLegacyTemplates`, bỏ qua doc khi `reviewComparableContent(r.Template) == reviewComparableContent(DefaultReviewRequestTemplate)`. Không cần đổi FE. Owner: fulfill BE.
+
+**X-4 — Ghi chú · Mera FE · nút "Gửi 0 đơn" vẫn bấm được khi chỉ còn mã không có đơn**
+- Bằng chứng: Mera FE `RequestReviewsDialog.tsx:168` (`nothingToSend = ids.length === 0`), so với dora-1 `RequestReviewsDialog.tsx:195` (`ids` rỗng **hoặc** N = 0 và không có mã ở trang khác). Kịch bản parity S8: chọn mã a (1 đơn) và mã c (không có đơn), bỏ tích đơn của a. dora-1 khoá nút. Mera FE gửi `ids:[c]`, BE trả `no_orders`, toast "Không xếp hàng tin nào". Spec §13 ghi "disable khi N = 0".
+- Sửa: `nothingToSend = ids.length === 0 || (counts.selected === 0 && unknownRows === 0)`. Owner: Mera FE.
+
+**X-5 — Ghi chú · fulfill BE · hiệu năng lọc "Xin review" khi xem "Tất cả project"**
+- Mỗi request list đọc ledger 1 lần (2 lần khi kèm `date_field=requested`). Index đúng: `{project_id, sent_at}` (mới) cho `sent` và khoảng ngày, `{project_id, status}` cho `pending`/`failed`, `none` dùng `$or` qua cả hai. Nhưng truy vấn không phải covered (projection `etsy_receipt_id` không nằm trong index), nên phải FETCH từng doc.
+- Tập receipt (với `none` và `sent` là toàn bộ đơn từng xin của mọi project của caller) được nhúng vào `$match` của aggregate counts, vào `Find`, và vào `CountDocuments` khi có lọc review/rating. Khoảng 22 byte/receipt: 100k receipt ≈ 2.2MB mỗi lệnh, tối đa 3 lệnh mỗi request.
+- Phía `shipment_trackings` dùng index `project_ids` có sẵn, còn `$elemMatch`+`$in` được tính trong bộ nhớ (lookup theo tập, không quét tuyến tính).
+- Request lặp lại khi: tự tải ngầm mỗi 10s lúc còn đơn đang chờ, và mỗi trang khi export.
+- Kết luận: ổn ở quy mô hiện tại. Khi ledger lớn: thêm `etsy_receipt_id` vào index `{project_id, sent_at}` (covered), hoặc ghi cờ lên `shipment_trackings` như `reviewed_project_ids`. Owner: fulfill BE.
+
+**X-6 — Ghi chú · Mera FE · bảng preview 5000 dòng không ảo hoá**
+- `RequestReviewsDialog.tsx:440` render đủ `sample` (tối đa 5000 × 5 ô). Chạy được nhưng mở dialog của project lớn sẽ chậm, còn dora-1 thì có ảo hoá. Key `${order_id}|${tracking_code}` có thể trùng nếu 2 receipt cùng order_id và cùng mã (hiếm, chỉ ra cảnh báo của React).
+
+**X-7 — Ghi chú · 2 FE · "Chưa xin review" + "Ngày xin review" + khoảng ngày luôn ra rỗng mà không báo**
+- Đúng ngữ nghĩa Go (`delivery_review_request_filter.go:86-95`). Có thể thêm 1 dòng gợi ý khi `reviewRequest === 'none' && dateField === 'requested' && (from || to)`.
+- Tương tự `date_field=ship` cũ: chọn "Ngày xin review" mà chưa có ngày thì không lên URL, nên tải lại trang sẽ về "Ngày Paid".
+
+**X-8 — Ghi chú · Go vs 2 FE · ký tự khoảng trắng hiếm trong tiêu đề** (xem X.3)
+- U+0085 (NEL): Go gộp thành dấu cách, FE giữ nguyên. Tiêu đề chỉ có `"\u0085"` thì FE cho qua còn Go trả `invalid_title`.
+- U+FEFF và U+200B: Go giữ nguyên, nên tiêu đề chỉ có `"\uFEFF"` được Go chấp nhận dù nhìn như trống. FE chặn U+FEFF.
+- Không ảnh hưởng tính duy nhất. Nếu muốn chặt: Go thêm `strings.Trim(…, "\uFEFF\u200B")` hoặc từ chối tiêu đề không có ký tự nhìn thấy được.
+
+### X.6 Thứ tự deploy (bổ sung N.5)
+- Giữ N.5. Thêm 1 điều kiện cứng: **fulfill BE phải lên trước mọi FE có §13** (X-1). Ở N.5 dora-1 vốn đã lên sau bước 2. Với Mera FE, "BE trước FE vài phút" giờ là bắt buộc, không còn là tuỳ chọn.
+- Trước bước 2: chạy 2 truy vấn kiểm prod của X-2 và X-3, cùng với kiểm MT-2.
