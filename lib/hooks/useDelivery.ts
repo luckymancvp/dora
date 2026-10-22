@@ -8,6 +8,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { buildDeliveryTrackingQuery } from "@/lib/delivery/deliveryTracking";
+import { REVIEW_PENDING_POLL_MS, hasPendingReviewRequest } from "@/lib/delivery/reviewRequest";
 import type {
   BulkRefreshJob,
   BulkRefreshRequest,
@@ -18,6 +19,14 @@ import type {
   DeliveryTrackingListParams,
   DeliveryTrackingOrder,
   DeliveryTrackingListResponse,
+  ReviewRequestPreview,
+  ReviewRequestProjectBody,
+  ReviewRequestRunResult,
+  ReviewRequestSendRequest,
+  ReviewRequestSendResult,
+  ReviewRequestSettings,
+  ReviewRequestSettingsUpdate,
+  ReviewRequestSummary,
 } from "@/lib/types/delivery";
 
 /**
@@ -74,6 +83,9 @@ export function useDeliveryTrackings(p: DeliveryTrackingListParams) {
     // Giữ rows trang trước khi đổi trang/filter để bảng không nhấp nháy.
     placeholderData: keepPreviousData,
     staleTime: 15_000,
+    // Còn đơn "Đang chờ gửi" (Request reviews) → tự tải lại tới khi worker Mera gửi xong.
+    refetchInterval: (q) =>
+      hasPendingReviewRequest(q.state.data?.items) ? REVIEW_PENDING_POLL_MS : false,
   });
 }
 
@@ -195,5 +207,111 @@ export function useBulkRefreshJob(jobId: string | null) {
     enabled: !!jobId,
     refetchInterval: (q) => (q.state.data?.done || q.state.status === "error" ? false : 3000),
     retry: false,
+  });
+}
+
+// =====================================================================================
+// Request reviews — proxy `app/api/delivery/review-requests/*` (contract _workspace/01 §3.3, §4.1).
+// `projectId` = hex | "dora" (reviewRequestProjectId) — null = chưa chọn project → không gọi.
+// =====================================================================================
+
+const RR_KEY = ["delivery", "review-requests"] as const;
+
+function jsonPost(body: unknown, method: "POST" | "PUT" = "POST"): RequestInit {
+  return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+}
+
+function projectQuery(projectId: string): string {
+  return new URLSearchParams({ project_id: projectId }).toString();
+}
+
+export function useReviewRequestSettings(projectId: string | null) {
+  return useQuery({
+    queryKey: [...RR_KEY, "settings", projectId],
+    queryFn: ({ signal }) =>
+      deliveryFetch<ReviewRequestSettings>(
+        `/api/delivery/review-requests/settings?${projectQuery(projectId ?? "")}`,
+        { signal },
+      ),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+/** PUT settings — đặt kết quả vào cache settings của project; preview phải tính lại (max_days đổi). */
+export function useSaveReviewRequestSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ReviewRequestSettingsUpdate) =>
+      deliveryFetch<ReviewRequestSettings>("/api/delivery/review-requests/settings", jsonPost(body, "PUT")),
+    onSuccess: (res, body) => {
+      qc.setQueryData<ReviewRequestSettings>([...RR_KEY, "settings", body.project_id], res);
+      void qc.invalidateQueries({ queryKey: [...RR_KEY, "preview"] });
+    },
+  });
+}
+
+/** Preview chạy tự động — luôn tính mới mỗi lần mở dialog (không cache, không retry). */
+export function useReviewRequestPreview(projectId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: [...RR_KEY, "preview", projectId],
+    queryFn: ({ signal }) => {
+      const body: ReviewRequestProjectBody = { project_id: projectId ?? "" };
+      return deliveryFetch<ReviewRequestPreview>("/api/delivery/review-requests/preview", {
+        ...jsonPost(body),
+        signal,
+      });
+    },
+    enabled: enabled && !!projectId,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+}
+
+/** Sau run/send: dòng bảng (badge) + summary đổi; preview cũ hết đúng. */
+function useAfterReviewRequestQueued() {
+  const qc = useQueryClient();
+  return () => {
+    void qc.invalidateQueries({ queryKey: ["delivery", "list"] });
+    void qc.invalidateQueries({ queryKey: [...RR_KEY, "summary"] });
+    qc.removeQueries({ queryKey: [...RR_KEY, "preview"] });
+  };
+}
+
+export function useRunReviewRequests() {
+  const afterQueued = useAfterReviewRequestQueued();
+  return useMutation({
+    mutationFn: (projectId: string) => {
+      const body: ReviewRequestProjectBody = { project_id: projectId };
+      return deliveryFetch<ReviewRequestRunResult>("/api/delivery/review-requests/run", jsonPost(body));
+    },
+    onSuccess: afterQueued,
+  });
+}
+
+export function useSendReviewRequests() {
+  const afterQueued = useAfterReviewRequestQueued();
+  return useMutation({
+    mutationFn: (body: ReviewRequestSendRequest) =>
+      deliveryFetch<ReviewRequestSendResult>("/api/delivery/review-requests/send", jsonPost(body)),
+    onSuccess: afterQueued,
+  });
+}
+
+/** Đếm hàng đợi của project — hỏi lại 10s/lần khi còn tin chờ/đang gửi. */
+export function useReviewRequestSummary(projectId: string | null) {
+  return useQuery({
+    queryKey: [...RR_KEY, "summary", projectId],
+    queryFn: ({ signal }) =>
+      deliveryFetch<ReviewRequestSummary>(
+        `/api/delivery/review-requests/summary?${projectQuery(projectId ?? "")}`,
+        { signal },
+      ),
+    enabled: !!projectId,
+    refetchInterval: (q) => {
+      const d = q.state.data;
+      return d && d.queued + d.sending > 0 ? 10_000 : false;
+    },
   });
 }

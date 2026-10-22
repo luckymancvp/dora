@@ -2,6 +2,7 @@
 
 import { Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DeliveryUtilsDropdown } from "@/components/delivery/DeliveryUtilsDropdown";
 import { doraProjectLabel } from "@/lib/delivery/deliveryTracking";
 import { DORA_PROJECT_ID, doraShopProjectId, isDoraProjectId } from "@/lib/types/delivery";
 import type { DeliveryProjectsResponse } from "@/lib/types/delivery";
@@ -10,7 +11,8 @@ export const selectClass =
   "h-9 rounded-lg border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50 dark:bg-input/30";
 
 /**
- * Select Project (Tất cả · project Mera · "Dora" · "Dora - {shop} (n)") + nút Export XLSX.
+ * Select Project (Tất cả · project Mera · "Dora" · "Dora - {shop} (n)") + nút Export XLSX + dropdown Utils
+ * (Request reviews / Cài đặt Request reviews).
  * `doraShops === null` (Mera chưa có endpoint Dora) → ẩn option Dora (S3).
  */
 export function DeliveryToolbar({
@@ -20,6 +22,9 @@ export function DeliveryToolbar({
   exportProgress,
   exportDisabled,
   onExport,
+  onRequestReviews,
+  onReviewSettings,
+  selectedCount,
 }: {
   project: string;
   projects: DeliveryProjectsResponse | undefined;
@@ -28,6 +33,10 @@ export function DeliveryToolbar({
   exportProgress: string | null;
   exportDisabled: boolean;
   onExport: () => void;
+  onRequestReviews: () => void;
+  onReviewSettings: () => void;
+  /** Số mã đang chọn (badge trên mục Request reviews). */
+  selectedCount: number;
 }) {
   const doraShops = projects?.doraShops ?? null;
   const showDora = doraShops !== null || isDoraProjectId(project);
@@ -60,6 +69,11 @@ export function DeliveryToolbar({
           </>
         )}
       </Button>
+      <DeliveryUtilsDropdown
+        onRequestReviews={onRequestReviews}
+        onReviewSettings={onReviewSettings}
+        selectedCount={selectedCount}
+      />
       <label htmlFor="delivery-project" className="text-sm font-medium text-foreground">
         Project:
       </label>

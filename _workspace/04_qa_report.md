@@ -1,147 +1,198 @@
-# 04 — QA tích hợp: tracking giao hàng Mera ↔ dora-1 (vòng 1: backend + frontend)
+# 04 — QA tích hợp: Request reviews (dora-1 ↔ Mera fulfill ↔ admin ↔ extension)
 
-Ngày 2026-10-21 · Đầu vào: `_workspace/01_architect_contract.md` (S1–S13), `02_backend_changes.md`, `03_frontend_changes.md`, plan Mera `04_dora_shared_plan.md` §4–§5 + addenda, mã Mera BE (nhánh dev, working tree, chưa commit): `delivery_external_refs.go`, `delivery_tracking_controller.go`, `delivery_tracking_query.go`, `delivery_tracking_bulk.go`.
+Ngày 2026-10-21 · Skill `dora-integration-qa` · Nguồn sự thật shape: Go code `mera-fulfill-backend` (plan §10).
+Phạm vi: diff chưa commit ở `dora-1`, `mera-fulfill-backend`, `mera-fulfill-frontend` (bỏ qua `OrderTable.tsx`, `OrdersPage.tsx`), `mera-admin-backend`; đọc thêm `dora-extension` (luồng `fetch-order-convo`). Không sửa code.
 
-## Kiểm chứng đã chạy
-- `npx tsc --noEmit` (dora-1): **exit 0**. Lưu ý `next.config.mjs` có `typescript.ignoreBuildErrors: true` nên `npm run build` KHÔNG bắt lỗi type, phải dựa vào tsc.
-- Không gọi được endpoint thật: chưa có Mera dev nào chạy bản external-refs. Shape được so bằng cách đọc struct Go + JSON tag.
-- Đọc mã nguồn Next 16.2.6 `node_modules/next/dist/server/after/*` + `build/templates/app-route.js` để kiểm `after()`.
+## 0. Kết luận
 
-## Kết luận
-**Chặn merge: không có.** Shape JSON khớp field theo field ở cả 13 seam. Có 4 finding **nên sửa**: 2 ở luồng push (cả hai chỉ xảy ra khi bật `DELIVERY_PUSH`), 1 ở FE, 1 ở route refresh.
+**Không có finding chặn merge.** Mọi hợp đồng dây (header, path, body key, kiểu `requestedAt`, shape 409, JSON tag ↔ type TS) đều khớp; build/type check sạch.
+Có **6 finding nên sửa**, phần lớn là hành vi khi tải lớn hoặc khi có lỗi (timeout Run đồng bộ, 429 Etsy do fetch theo lô, rơi số đếm skip ở dora-1, kẽ hở validate mẫu tin, "unconfirmed → failed"), cộng 1 điểm cần xác nhận dữ liệu thật.
 
----
+## 1. Kiểm chứng bằng thực thi
 
-## Nên sửa
-
-### F1 — Push: chunk cuối timeout 30s, dora-1 không gửi lại chunk cuối cùng snapshot → có thể lặp push toàn bộ mãi mãi
-- **Seam:** S12 · **tầng:** service dora-1 ↔ service Mera
-- **Bằng chứng:** `lib/services/delivery-push.ts:41` (`CHUNK_TIMEOUT_MS = 30_000`), `:337-347` (bắt throw → `failed`, break), `:371-378` (chunk cuối khác 200 done → `failed`). Phía Mera: `delivery_external_refs.go:53-55` (apply ≤10 phút, chờ khoá ≤20s), `:282-286` (apply chạy tiếp `WithoutCancel` khi caller đã đi; *"a retry of the last chunk then gets the stored result"*), `:210-212` (snapshot đã `applied` → trả lại kết quả đã lưu), `:305-307` + controller `:497-501` (đang apply bởi request khác → **202 `done:false, applying:true`** ở chunk cuối), controller `:484-485` (409 `scope_busy` + `retry_after:60`).
-- **Kịch bản lỗi:** lần push đầu của một scope ~19k dòng. Chunk cuối kích apply: tạo ~17k doc (35 bulk ×500) + tra mã + lấy danh sách shop từ admin, có thể quá 30s (cộng thêm tới 20s chờ khoá). dora-1 abort ở 30s → `502 mera_unavailable` → `failed`, KHÔNG ghi hash. Mera vẫn apply xong. Lần sync kế (~2 phút) dựng snapshot MỚI → Mera apply lại toàn bộ → lại >30s → lặp. Hậu quả: cứ mỗi lần sync là ~19 chunk + 1 lần apply đầy đủ trên Mera, `deliveryPushError` không bao giờ hết. Trường hợp 202 `applying:true` cũng rơi vào `failed unexpected_response`.
-- **Gợi ý sửa:** chỉ cho chunk cuối: khi bị `MeraApiError` 502 (timeout), 202 `applying:true` hoặc 409 `scope_busy` thì gửi lại **đúng body đó** (cùng `snapshot_id`) 2–3 lần, nghỉ 10–20s giữa các lần. Mera sẽ trả 200 kèm `applied` đã lưu. Có thể nâng thêm timeout chunk cuối (vd 90s) khi chạy từ cron (`maxDuration` 300). Thêm `applying?: true` vào `DeliveryPushChunkAccepted` (`lib/types/delivery.ts:339`).
-
-### F2 — Push: gọi `after()` SAU khi response đã đóng (đường sync chạy nền) → push bị bỏ im lặng + promise `waitUntil` treo
-- **Seam:** S13 trigger (a) · **tầng:** service
-- **Bằng chứng:** `lib/services/delivery-push.ts:478-482` (`try { after(run) } catch { void run() }`). Bên gọi chạy nền: `lib/services/sheet-order.ts:68`, `lib/services/tracking-import.ts:154` (`void syncSheetIfStale(cfg)`). Các route này trả response trước khi sync xong: `app/api/sheets/resolve`, `resolve-batch`, `update`, `app/api/tracking/import/check`, `preview`. Mã Next: `after.js` chỉ throw khi KHÔNG có `workStore`, nhưng ALS vẫn truyền `workStore` sang phần chạy tiếp của promise nên **không throw** → fallback không bao giờ chạy. `after-context.js` `addCallback` → `runCallbacksOnClose` → `onClose(resolve)`. `build/templates/app-route.js:230` `onClose: cb => res.on('close', cb)`: response đã đóng thì sự kiện `close` không phát lại, nên callback không bao giờ chạy và `waitUntil(runCallbacksOnClosePromise)` treo mãi.
-- **Kịch bản lỗi:** config warm, user mở panel tra đơn. `/api/sheets/resolve` trả về ngay, sync nền xong sau vài giây và gọi `after()` → push của lần sync đó không chạy (cron 30 phút sẽ bù). Trên Vercel, promise `waitUntil` không bao giờ resolve có thể giữ invocation tới `maxDuration`. Đường đã `await` (`/api/sheets/sync-stale`, `/configs/[id]/sync`) vẫn chạy đúng.
-- **Gợi ý sửa:** dùng dạng promise `const p = run(); try { after(p) } catch { /* p đã chạy */ }`. Nhánh promise của `after` gọi thẳng `waitUntil` mà không phụ thuộc `onClose`. Push bắt đầu ngay, không `await` nên không tăng latency của response. Cách khác: chỉ gọi `scheduleDeliveryPush` ở route đã `await` sync.
-- **Mức tin cậy:** suy ra từ mã nguồn Next 16.2.6, chưa chạy runtime để tái hiện. Ghi là "nên sửa (cần xác nhận runtime)".
-
-### F3 — FE: `rowFromDetail` thay `orders` đã lọc theo project bằng `orders` của detail (không lọc)
-- **Seam:** S6 · **tầng:** hook ↔ service Mera
-- **Bằng chứng:** `lib/hooks/useDelivery.ts:116` (`orders: rest.orders?.length ? rest.orders : prev.orders`). Mera list lọc orders theo project đang xem: `delivery_tracking_query.go:451-465` (`scope` = `p.ProjectIDs`, `dora:<store>` chỉ giữ đơn dora của shop đó) + `:174-177`. Detail/refresh dùng `allowed` = MỌI project + `dora` (internal key): controller `:299`, `:336`. Mera FE có cùng lỗi (`TrackingPage.tsx:93-97`), dora-1 chép nguyên.
-- **Kịch bản lỗi:** đang xem "Dora - ShopA", làm mới một mã có cả đơn Mera lẫn đơn Dora ShopB → dòng hiện thêm đơn Mera/ShopB, cột Fulfill/Order ID đổi. `rowShops` khi tick đổi (đếm ≤50/shop sai). Bấm "Tải lại" thì về đúng.
-- **Gợi ý sửa:** giữ tập đơn của dòng cũ, chỉ lấy dữ liệu mới cho các đơn trùng khoá: `orders: prev.orders.map(po => rest.orders?.find(o => o.order_id === po.order_id && (o.source ?? "mera") === (po.source ?? "mera") && o.store === po.store) ?? po)`.
-
-### F4 — Route refresh: `maxDuration = 60` bằng đúng timeout `meraFetch` 60s, không còn biên
-- **Seam:** S6/S10 · **tầng:** route
-- **Bằng chứng:** `app/api/delivery/[id]/refresh/route.ts:10` + `lib/services/delivery-proxy.ts:39`. Mera refresh: ≤45s/shop đọc vận đơn, rồi đọc review (controller `:302-305`).
-- **Kịch bản lỗi:** Mera trả ở giây ~58–60 (cộng thời gian `auth()`). Vercel cắt hàm ở 60s, trả 504 HTML thay vì 502 `mera_unavailable` → FE `deliveryFetch` nhận `{error:"504"}` → toast hiện "504".
-- **Gợi ý sửa:** `REFRESH_TIMEOUT_MS = 55_000`, hoặc `maxDuration = 75`.
-
----
-
-## Ghi chú (không chặn)
-- **G1 Chi phí đọc:** mỗi lần sync (~2 phút/config) push đọc lại toàn bộ `sheet_rows` của config (projection 10 field) + `listCarrierRules` + sha256, kể cả khi không đổi (`delivery-push.ts:286-291`). ~19k doc/lượt. Hiện chấp nhận được; theo dõi khi bật `*`.
-- **G2 Config bị tắt/xoá:** ref của scope đó trên Mera không bao giờ được gỡ (không có snapshot rỗng cuối). Ghi nhận cho rollout.
-- **G3 Quy tắc skip của Mera** (`delivery_external_refs.go:512`): `store` rỗng (sheet thiếu cột Store), receipt không 9–12 số, `paid_at` null/không parse được → `skipped_invalid`. dora-1 vẫn gửi những dòng này (đúng A7). Chỉ quan sát được qua `deliveryPushApplied.skipped_invalid`, không có UI.
-- **G4 Cron 300s:** `pushDeliveryAll` chạy tuần tự. Nếu Mera treo, mỗi config mất 30s ở chunk 1; trên 10 config đang bật thì hàm bị cắt giữa chừng, khoá của config dở dang treo 15 phút (sync push → `skipped_locked`).
-- **G5 `after()` ở route đã await** (`/api/sheets/sync-stale`) bị giới hạn bởi `maxDuration` mặc định của Vercel (route không đặt). Cần xác nhận dự án dùng fluid compute (300s) hay mặc định cũ (15s). Contract §7.4 đã chấp nhận rủi ro này.
-- **G6 Kích thước body:** 1000 dòng ≈ 300–500KB/chunk. Cần xác nhận proxy trước Mera (nginx/ingress) không giới hạn dưới 1MB.
-- **G7 Hết phiên:** middleware `proxy.ts` redirect `/api/delivery*` về `/login` (HTML 200) → `deliveryFetch` `res.json()` ném SyntaxError, toast hiện chuỗi thô. Mẫu này có sẵn ở mọi hook khác.
-- **G8 Retry global `retry: 1`** (`components/providers.tsx`): lỗi 4xx Mera (`invalid_*`, `not_found`) bị gọi lại 1 lần. Vô hại.
-- **G9 Mera list `paid_desc`** là sort mặc định. FE chỉ gửi `delivered_desc`. Khớp.
-
----
-
-## Seam đã đối chiếu: KHỚP
-| Seam | Đối chiếu | Kết quả |
-|---|---|---|
-| S11 push row | `DeliveryPushRow` (types:300) ↔ `ExternalRefRow` JSON tag (`delivery_external_refs.go:85-96`): item_id, order_id, etsy_receipt_id, store, code, carrier, sheet_status, product_name, provider, paid_at (`*string`, null OK) | khớp 10/10 |
-| S12 request | `DeliveryPushRequest` ↔ `externalRefsRequest` (controller:446-454): source/scope/snapshot_id/chunk/chunk_total/window_from(`*time.Time`, RFC3339 `+07:00` parse OK)/rows. `scope` = hex (không chứa ':'), uuid (không '#', ≤100), chunk 1-based, `chunk_total` ≥1, `rows:[]` hợp lệ (validate:152-174), window_from giống nhau mọi chunk (kiểm :207) | khớp |
-| S12 response | 202 `{snapshot_id,received,chunk_total,done:false[,applying]}` / 200 `{snapshot_id,done:true,applied{rows,upserted_refs,removed_refs,new_codes,skipped_mera_shop,skipped_invalid}}` ↔ `DeliveryPushChunkAccepted`/`DeliveryPushDone`/`parseApplied` | khớp (thiếu `applying?`, xem F1) |
-| S12 lỗi | 409 `snapshot_superseded` → `superseded`; 400 `invalid_payload`, 409 `scope_busy`, 502 `mera_shops_unavailable`, 403 `internal_only` → `failed "<status> <code>: <error>"` | khớp |
-| Push logic | `window_from` = 00:00 VN của (hôm nay VN − 60) (đã tính tay 2 mốc biên ngày), `paid_at` `YYYY-MM-DDTHH:mm:ss+07:00`, lọc Tracking rỗng, mọi Status, giữ null / bỏ < window, chunk 1000, sort code-unit, hash gồm window_from, bỏ qua khi trùng hash & <24h, khoá atomic + stale 15', nhả khoá theo `lockAt`, cổng `DELIVERY_PUSH` ở cả `scheduleDeliveryPush` và `pushDeliveryForConfig`, carrier qua `evaluateCarrierRules` | đúng contract §2 |
-| S13 trigger | `syncSheetNow` gọi `scheduleDeliveryPush` sau `updateOne` thành công, không await, không throw, chữ ký/return giữ nguyên. Cron GET: guard `CRON_SECRET` giống fetch-orders, `configId` sai hex → 400 `invalid_id`, `force=1`, `maxDuration` 300. `vercel.json` `*/30`. `proxy.ts` miễn `/api/cron` | khớp (riêng `after()` xem F2) |
-| S1 list | whitelist route (`delivery-proxy.ts:44-58`) = đúng tập key Mera `List` đọc (controller:145-249). Output `buildDeliveryTrackingQuery` ⊂ whitelist. `DeliveryListResult` {items,total,page,limit,counts,stores,providers} ↔ type. `DeliveryTrackingView`/`DeliveryOrderView`/`DeliveryItemView`/`ItemReviewView` ↔ type A, field theo field | khớp |
-| S2 tab | Key `counts` của Mera: `all`, 9 status, `delivered_no_review`, `delivered_rating_1..5` (query.go:578-587). Reviewed = delivered − no_review. `review=none` không bao giờ đi kèm `rating` (Mera trả 400 nếu có) | khớp |
-| S3 project | `/api/v1/projects` → `{projects:[{id(hex),name,team_member_ids}]}`, route bỏ `team_member_ids`. `/dora-shops` → `{shops:[{store,count}]}`. `dora:<store>`: URLSearchParams encode/decode tròn (`+`/`%3A`), Go `c.Query` decode `+` thành khoảng trắng, store đã trim khi push nên khớp `TrimSpace` của Mera | khớp |
-| S4 row | `orders[].source` ("mera"/"dora_sheet"), `etsy_receipt_id`. Link `/orders?search=` được `app/orders/page.tsx:58` đọc | khớp |
-| S5 detail | `DeliveryTrackingDetailView` embed row (JSON phẳng, không bọc `{tracking}`) + events/flags/mera_carrier/status_changed_at/first_event_at/error_count/hidden/created_at/updated_at ↔ type | khớp |
-| S6 refresh | `refreshResponse` = detail phẳng + `review_check` + `review_error`. Mọi mã lỗi trong contract §3.2 được chuyển tiếp nguyên body. `refreshErrorMessage` xét nhánh `mera_*` trước 503 | khớp (F3, F4) |
-| S7/S8 bulk | Mera 202 `BulkRefreshJob` {id,created_by,done,codes,no_receipt,shops[],started_at,finished_at}, `BulkRefreshShop` 11 field, phase `queued/shipments/reviews/done/failed` ↔ type. Hook coi mọi 2xx là thành công. Poll 3s, dừng khi `done` hoặc lỗi, `retry:false`. `onDone` gọi đúng 1 lần/job (kể cả job `done` ngay) → invalidate list + detail. Route tĩnh `bulk-refresh` không bị `[id]` nuốt (`[id]` ở cùng cấp, Next ưu tiên segment tĩnh) | khớp |
-| S9 export | `limit=200` (trần Mera `invalid_limit` >200), dừng khi `items<200` hoặc `page*200>=total`, bỏ mã trùng. 24 cột header = độ dài mỗi dòng (12 + 11 + 1) | khớp |
-| S10 hạ tầng | 401 Mera → 502 `mera_auth_failed`. Lỗi không JSON → 502 `mera_bad_response`. Timeout → 502 `mera_unavailable`. Thiếu env → 503 `mera_not_configured`. FE không redirect trên 401 | khớp |
-| Type contract | Hook/component/helper chỉ import từ `@/lib/types/delivery`, không tự khai shape API | khớp |
-
----
-
-# Vòng 2 — kiểm lại F1–F4/G1 + seam chéo với Mera BE/FE đã xong (2026-10-21)
-
-Đầu vào: mã dora-1 working tree (file delivery chưa track, đọc toàn văn), `git diff` các file đã track (`mera-order.ts`, `sheet-sync.ts`, `types/sheets.ts`, `vercel.json`, `sidebar.tsx`, `.env.example`); Mera BE `mera-fulfill-backend` (dev, chưa commit: `delivery_external_refs.go`, controller, query/refresh/bulk/model diff); Mera FE `mera-fulfill-frontend` (chưa commit); plan Mera §4, §5, §9.
-
-## Kiểm chứng đã chạy
 | Lệnh | Kết quả |
 |---|---|
-| dora-1 `npx tsc --noEmit` | exit 0 |
-| Mera BE `go build ./...` | exit 0 |
-| Mera BE `go vet ./internal/...` | exit 1, chỉ cảnh báo có sẵn `dora_api_service.go:76 rawConvID` (đã ghi ở §9) |
-| Mera BE `go test ./internal/services/ -run "External\|DoraShop\|ParseDelivery"` + `./internal/controllers/ -run "Dora\|ParseDeliveryProject\|External"` | ok / ok |
-| Mera FE `npx tsc -b` | exit 0 |
-| Next 16.2.6 `dist/server/after/after-context.js` | `after(promise)` → `this.waitUntil(task.catch(...))` trực tiếp, không qua `onClose` (xác nhận F2) |
+| dora-1 `npx tsc --noEmit` | sạch (exit 0) |
+| fulfill `go build ./...` | sạch |
+| fulfill `go vet ./internal/...` | **exit 1** — chỉ 1 lỗi CÓ TỪ TRƯỚC, không thuộc diff: `internal/services/dora_api_service.go:76` `struct field rawConvID has json tag but is not exported` (commit f4ff0f2, file không bị sửa). `go vet` cho controllers/routes/models: sạch. |
+| fulfill `go test ./internal/controllers ./internal/services -run Review…` | ok |
+| admin `go build ./... && go vet ./...` | sạch; `go test ./internal/models ./internal/services -run Request` ok |
+| Mera FE `npx tsc -b` | sạch; `vitest` reviewRequest + RequestReviewsDialog + TriggerModal: 43/43 pass |
+| Gọi thử endpoint | Không làm được: dev server dora-1 không chạy (localhost:3000 từ chối kết nối), Mera BE chưa deploy. DB trong `.env.local` có 0 doc `order_conversations` → không kiểm được payload "đơn chưa có hội thoại" (xem C1). |
 
-Vẫn chưa gọi được endpoint thật. Shape so bằng struct Go + JSON tag.
+## 2. So khớp chéo theo seam (✓ = khớp)
 
-## Kết luận vòng 2
-**Không có finding chặn merge.** F1–F4 và G1 đã đóng, không thấy hồi quy. Seam dora-1 ↔ Mera BE khớp ở mọi điểm được yêu cầu. Còn **1 finding nên sửa, nằm ở Mera FE** (cùng lỗi F3 chưa được chép bản sửa sang) và vài ghi chú.
+| Seam | Mera Go (nguồn sự thật) | dora-1 | Mera FE | Ghi chú |
+|---|---|---|---|---|
+| settings GET/PUT | `ReviewRequestSettingsView` review_request_service.go:148-157 | `normalizeSettings` review-request-proxy.ts:64 ✓ | `normalizeSettings` reviewRequestApi.ts ✓ | `updated_at` null khi chưa có doc ✓; PUT `max_days *int` — cả 2 FE chặn số không nguyên ✓ |
+| preview | `ReviewPreview` :469 + `ReviewSkipCounts` :240 (6 key) + sample :456 (thêm `project_id`, `tracking_id`) | **chỉ giữ 3 key skipped** (:81-88); bỏ `project_id`/`tracking_id` của sample (FE không đọc → vô hại) | giữ mọi key ✓ | xem B4 |
+| run | `ReviewRunResult {queued, checking, skipped}` :498 | bỏ `checking` + 3 key skip (:177) | giữ skip, bỏ `checking` | xem B4 |
+| send | `ReviewSendResult` :661; skipped có `tracking_id` :655; warnings có `etsy_receipt_id` | bỏ `tracking_id` (:112-116), bỏ `etsy_receipt_id` | type thiếu `tracking_id` | xem N1 |
+| summary | `ReviewSummary {queued(⊇checking), checking, sending, sent_today, failed_recent[]}` :856; `At time.Time` luôn có | bỏ `checking` (vô hại: queued đã gồm checking) ✓ | ✓ | |
+| orders[].review_request | `DeliveryReviewRequestView` :926 (`sent_at` null, `skip_reason` omitempty chỉ khi skipped) | type D + pass-through list/detail ✓; `rowFromDetail` ghi đè theo đơn ✓ | ✓ | detail cũng gắn (`AttachReviewsToDetail` → attachReviews → attachReviewRequests) ✓ |
+| máy fetch convo | `FetchOrderConversations` dora1_client.go: header `x-api-key`, body `{shopName, orderIds:int64[]}`, đọc `requestedAt` RawMessage (RFC3339Nano / số), 409 + `code=="shop_offline"` → ErrDora1ShopOffline | route fetch/route.ts: `hasMachineApiKey` (x-api-key), `orderIds` số nguyên dương ≤50, `requestedAt = new Date().toISOString()` TRƯỚC publish, 409 `{ok:false, code:"shop_offline"}` ✓; proxy.ts:37-43 cho `/api/machine/*` có `x-api-key` đi qua ✓ | — | ✓ toàn bộ |
+| fetched_at vs requestedAt | `reviewCheckDecision` worker.go:368: `fetched_at(giây) >= requested.Unix()` | `fetched_at = new Date()` do **server dora-1** ghi lúc extension POST sync (order-conversation-sync.ts:242,261) — cùng đồng hồ với `requestedAt` ✓; `order_id` lưu số, Mera query cả số + chuỗi (`receiptKeys`) ✓; `flexTime` đổi BSON Date → giây ✓ | — | Lệch cùng giây: doc cũ ghi trong cùng giây trước requestedAt được coi là mới — chênh ≤1s, chấp nhận được |
+| trigger | `RunFromTrigger` controller:254: `Authorization: Bearer INTERNAL_API_KEY`, `:project_id` hex \| `dora` (không nhận `dora:<store>`), 200 đồng bộ | admin executor: POST, Bearer, path `/internal/projects/%s/request-reviews`, target `dora` khi `include_dora` (trigger_executor.go:160-171), 200 → success ✓, body nil (fulfill không bind body) ✓, `X-Act-As-User` → email ✓ | TriggerModal gửi `request_reviews:{include_dora}` + `project_ids: []` khi "chỉ Dora"; validate khớp `ValidateTriggerProjects`/`onlyRequestReviews` admin ✓ | |
+| project map | `parseDeliveryProjectID`: hex \| dora \| dora:<store> | `reviewRequestProjectId`: '' → null (select bắt buộc), dora/dora:<store> → "dora" ✓ | `all`/'' → null (picker), dora:* → "dora" ✓ | xem N3 |
+| giới hạn 50 mã/shop | `perShop[o.Store]` ≤ `BulkRefreshMaxPerShop`=50 (đếm mã/store, chỉ ref trong scope) | `BULK_MAX_PER_SHOP`=50 theo `orders[].store` (đếm ≥ Mera) ✓ | như dora-1 ✓ | |
+| gửi tay | không kiểm hội thoại, xếp `queued` thẳng (service.go:818-825), giữ `project_id` scope ✓ | gửi `project_id` khi filter ≠ '' ✓ | gửi `fixedScope` ✓ | đúng plan R4 |
+| env guard | `DORA_SEND_SHOP_PREFIX` áp ở plan (candidates), Send (`send_blocked_env`), worker `sendOne`; không đặt + không prod ⇒ `ZZTEST-`; local/dev.env đặt `ZZTEST-`, master để trống ✓; worker mặc định on chỉ khi `ENVIRONMENT=production`, local/dev `off` ✓ | | | |
 
-## Xác minh bản sửa
-| # | Bản sửa | Bằng chứng | Kết quả |
-|---|---|---|---|
-| F1 | Gửi lại chunk cuối | `delivery-push.ts:55-57` (45s, 10/15/20s, ngân sách 225s), `:296` (chỉ `mera_unavailable`, không retry `mera_not_configured`), `:307-316` (409 `scope_busy` + `retry_after`×1000), `:317-320` (502 `mera_shops_unavailable`), `:336-339` (202 `applying:true`), `:456-470` (vòng gửi lại NGUYÊN `body`, cùng `snapshot_id`; kiểm `now+wait+45s ≤ deadline`). Mera: gửi lại khi đã `applied` → 200 kết quả đã lưu (`delivery_external_refs.go:210-212`); đang `applying` → chờ khoá ≤20s rồi 202 `applying` (`:299-307`); `mera_shops_unavailable`/lỗi áp → `backToPending` (`:336-338, :367-371`) nên gửi lại = áp lại; `chunk_total=1` gửi lại chunk 1 không đổi `latest_snapshot_id` vì header đã có (`:185-197`). `retry` chỉ sinh khi `isLast` nên chunk giữa không đổi hành vi. Tính tay: timeout ×4 = 45+10+45+15+45+20+45 = 225s, vừa đủ; `scope_busy` ×60s được gửi lại 2 lần. Ngoài ra lần áp thứ 2 của snapshot không đổi chỉ ghi mã có ref đổi (`decideExternalRefs` + `refsEqual`, `:651, :668`), nên vòng lặp "áp lại toàn bộ" mô tả ở F1 không còn | **đóng** |
-| F2 | `after(promise)` | `delivery-push.ts:585-595`: promise chạy ngay, `after(p)` gọi `waitUntil` trực tiếp. Ngoài request scope thì `after` throw và bị nuốt, promise vẫn chạy. Ở route đã `await` sync (`/configs/[id]/sync`), push giờ chạy SONG SONG với phần còn lại của request thay vì chạy sau response. Không await nên không tăng latency | **đóng** (còn phần runtime, xem N3) |
-| F3 | `mergeScopedOrders` | `useDelivery.ts:116, :120-138`: giữ tập đơn của dòng, thay theo khoá `order_id+source+store`. Khớp phạm vi Mera: list lọc theo `scope`, riêng `dora:<store>` chỉ giữ `source=dora_sheet && store` (`delivery_tracking_query.go:457-468`); detail/refresh trả mọi project + `dora` (controller `allowedProjects` thêm `dora`). Field cấp dòng (`paid_at`, `status`…) là của doc, không phụ thuộc phạm vi, nên spread `...rest` vẫn đúng | **đóng** |
-| F4 | Refresh 55s | `delivery-proxy.ts:42` `REFRESH_TIMEOUT_MS = 55_000`, `[id]/refresh/route.ts:10` `maxDuration = 60`, `mera-order.ts` `timeoutMs` mặc định 15s nên caller cũ giữ nguyên | **đóng** |
-| G1 | Lọc sơ bộ Mongo | `delivery-push.ts:92-103`. Đã đối chiếu từng nhánh với `sheetPaidAt`/`buildDeliveryPushRows`: Date/Time thiếu field, không phải string, có khoảng trắng hoặc sai định dạng đều được GIỮ (`$not` khớp cả field thiếu). Regex Time của Mongo ⇔ điều kiện JS (`hh≤23`, `mm` 2 số, `ss` 2 số tuỳ chọn). Chỉ lệch ở ngày không tồn tại cũ hơn cửa sổ (đã ghi chú trong code; Mera cũng bỏ dòng đó). Hash không đổi so với trước, trừ trường hợp lệch này (gửi lại 1 lần) | **đóng** |
+## 3. Findings
 
-## Seam chéo dora-1 ↔ Mera BE (bản cuối)
-| Seam | Đối chiếu | Kết quả |
-|---|---|---|
-| Request external-refs | `externalRefsRequest` (controller `:446-454`) + `validateExternalChunk` (`:154-174`): source `dora_sheet`, scope hex (không ':'), uuid (≤100, không '#'), `1≤chunk≤chunk_total≤500`, `rows≤1000`, `rows:[]` hợp lệ, `window_from` `*time.Time` RFC3339 (`+07:00` parse OK, cắt ms rồi so `Equal` với chunk 1). Mọi chunk + mọi lần gửi lại dùng cùng `window.iso` (tính 1 lần/lượt, `delivery-push.ts:411`) | khớp |
-| Luật nhiều mã | `externalCode` (`:444-460`): `,` `;` `\n` `\r`, hoặc ≥2 cụm ≥8 ký tự → invalid; cụm ngắn ghép lại. dora-1 gửi nguyên ô đã trim (`delivery-push.ts:209`), xuống dòng bên trong được giữ, JSON escape đúng | khớp |
-| Thứ tự chunk / supersede | Mera: chunk 1 mới → `latest_snapshot_id`; chunk >1 của snapshot lạ/hết hạn → 409 `snapshot_superseded`; snapshot cũ bị chặn cả khi lấy khoá (`:318-322`). dora-1 gửi tuần tự từ 1, gặp `superseded` thì dừng (không ghi hash), khoá Mongo `deliveryPushStartedAt` bảo đảm 1 lượt/config | khớp |
-| Body 202/200/409/502 | 202 `{snapshot_id,received,chunk_total,done:false[,applying:true]}`, 200 `{snapshot_id,done:true,applied{6 field, json "-" bị loại}}`, lỗi `{error,code[,retry_after]}` (controller `:476-501`) ↔ phân loại trong `sendChunk` | khớp |
-| `retry_after` | Mera `gin.H{"retry_after": 60}` (int, giây) ↔ `asNumber(getPath(data,"retry_after"))*1000`; type `DeliveryApiErrorBody.retry_after?: number` (`types/delivery.ts:280`) | khớp |
-| 500 `internal_error` chunk cuối | dora-1 → `failed`, không gửi lại. Mera đã `backToPending`, lượt sau dựng snapshot mới và áp (chỉ ghi phần đổi) | chấp nhận |
-| dora-shops | `GET /dora-shops` → `{shops:[{store,count(int64)}]}`, sắp theo tên. Lỗi → 500 `internal_error` → `fetchDoraShops` trả null → ẩn option | khớp |
-| `project_id=dora:<store>` | FE `doraShopProjectId(store)` → URLSearchParams (`:`→`%3A`, space→`+`) → whitelist proxy → Gin `c.Query` decode → `parseDeliveryProjectID` TrimSpace + so khớp `store` CHÍNH XÁC (phân biệt hoa thường) với ref. `store` lấy nguyên từ `/dora-shops` và dora-1 trim khi push, nên khớp | khớp |
-| `orders[].source` | `ToDeliveryView` luôn gán (`""`→`"mera"`), không `omitempty`. dora-1 vẫn `?? "mera"` phòng thủ | khớp |
-| List "Tất cả" | Không gửi `project_id` → Mera dùng mọi project được phép + `dora` (`allowedProjects`) → dòng có đơn Dora; export có cột Source | khớp |
-| Refresh mã dora | Đọc vận đơn theo `receiptsByShop(&doc)`, gồm cả ref dora (store = kênh Ably). Đọc review chỉ cho ref Mera (`meraOnlyRefs`). Mã chỉ có Dora đã giao → `review_check {receipts:0,item_reviews:0,error:""}` → `refreshReviewSummary` trả "" (toast chỉ hiện trạng thái). Mọi mã lỗi refresh (`shop_blocked_env`, `shop_busy`, `shop_offline`, `etsy_read_failed`, `no_receipt`, `too_soon`, `refresh_unavailable`) có nhánh trong `refreshErrorMessage` | khớp |
-| Bulk mã dora | `bulkShopCounts` (`delivery_tracking_bulk.go:115-120`) gom theo store của mọi ref active, gồm cả dora. Ref dora luôn có store (Mera bỏ dòng thiếu store) nên không rơi vào `no_receipt` | khớp (xem N2) |
-| `review=none` | Mã dora không bao giờ có `reviewed_item_keys` nên luôn nằm ở "Chưa đánh giá" (`delivered_no_review`). Tab sao 1–5 = 0 với `dora:*`. Đúng §9 mục 12 | khớp |
+### Chặn merge
+Không có.
 
-## Mera FE ↔ Mera BE
-| Điểm | Kết quả |
+### Nên sửa
+
+**B1 — Run đồng bộ, gọi dora-1 tuần tự từng shop, chạy dưới context của request → dễ vượt timeout proxy dora-1 (30s) / admin (60s) và bị huỷ giữa chừng**
+- Repo/owner: **mera-fulfill-backend** (BE fulfill).
+- Bằng chứng: `review_request_service.go:555-566` (vòng shop × chunk tuần tự, mỗi chunk 1 lần `FetchOrderConversations` = Ably presence + publish qua Vercel, có thể cold start); `review_request_controller.go:171,278` dùng `c.Request.Context()`; dora-1 `review-request-proxy.ts:33` `HEAVY_TIMEOUT_MS = 30_000`; admin `trigger_executor.go:81-82` `Timeout: 60s`.
+- Kịch bản: trigger "Gồm Dora" chạy trên N shop Dora (≈0,5–1s mỗi lần gọi dora-1, cộng 1 upsert Mongo cho mỗi đơn). Quá 60s thì admin ngắt kết nối và gin huỷ ctx → upsert / `FetchOrderConversations` / `UpdateMany` sau đó lỗi `context canceled` → `Run` trả lỗi. Kết quả: các shop phía sau không được xử lý ở lượt này. Các đơn của chunk đang dở đã ghi `checking` nhưng có thể chưa được nhờ đọc lại → nằm 15 phút rồi thành `conversation_unknown`. Audit trigger ghi thất bại; trên dora-1, người dùng thấy 502 `mera_unavailable` dù một phần đơn đã vào hàng đợi. Không gửi trùng (lần chạy sau tự lành), nhưng trigger Dora có thể thất bại kéo dài.
+- Sửa gợi ý: chạy Run với `context.WithoutCancel` + timeout riêng, hoặc làm async (202 + `/internal/jobs/:id`, admin đã có poll). Có thể gọi `FetchOrderConversations` song song giữa các shop (giới hạn concurrency). Cần đo số shop Dora / số đơn 7 ngày thật trước khi chốt.
+
+**B2 — Fetch theo lô bắn đồng thời nhiều chunk vào cùng 1 shop; extension xử lý từng message Ably song song và GET liên tục không giãn cách → nguy cơ Etsy 429; đơn lỗi bị bỏ im lặng**
+- Repo/owner: **mera-fulfill-backend** (cách chia chunk) + **dora-extension** (nếu cần throttle).
+- Bằng chứng: `review_request_service.go:557-565` publish mọi chunk 50 đơn của một shop liền nhau. `dora-extension/libs/ably.js:578-591` handler `async`, không xếp hàng → các chunk chạy song song. `content.js:862-866` GET `mission-control/orders/convos/{id}` tuần tự, không delay; đơn lỗi (429) → `getOrderConvoSafe` trả null → không POST. Memory dự án `orders-convo-fetch-on-demand` từng ghi nhận rủi ro 429 khi kéo theo lô.
+- Kịch bản: shop có 150 đơn giao trong 7 ngày → 3 publish → khoảng 150 GET dồn trong vài chục giây → 429. Các đơn bị 429 không bao giờ có `fetched_at` mới → `conversation_unknown` → lượt chạy sau lại nhờ đọc lại toàn bộ. Có thể kẹt vòng lặp: shop lớn không bao giờ được gửi, Etsy session của shop bị rate-limit.
+- Sửa gợi ý (Mera): mỗi shop chỉ có 1 lệnh fetch đang chờ. Chunk sau chỉ publish khi chunk trước đã có kết quả (hoặc đã timeout), hoặc mỗi lượt Run chỉ lấy ≤50 đơn/shop, phần còn lại để lượt sau. Extension: xếp hàng các `fetch-order-convo` và giãn ~300–500ms giữa các GET. Lưu ý: plan §4 đã chốt endpoint fetch theo lô, nên đây là giảm rủi ro chứ không phải đổi phạm vi.
+
+**B3 — Sau 24h chưa xác nhận DONE thì Mera đánh `failed: unconfirmed` (cả `interrupted`) — trái nguyên tắc "lạc quan khi không có phản hồi"; người dùng thấy "Gửi lỗi" nên có thể gửi tay lần 2 cho cùng buyer**
+- Repo/owner: **mera-fulfill-backend**.
+- Bằng chứng: `review_request_worker.go:484-488` (unconfirmed → failed), `:455-459` (interrupted → failed); dora-1 order_messages có luồng "DONE muộn" (commit c7384fb); memory `extension-rollout-lag` (extension cũ có thể không báo status về dora-1).
+- Kịch bản: extension gửi thành công nhưng status kẹt NEW/SENDING (bản cũ, hoặc DONE tới muộn sau khi doc đã failed — lúc đó `Finish` lọc `status: sending` nên DONE bị bỏ). Badge hiện "Gửi lỗi", `sent_at` null. Người dùng gửi tay lại → buyer nhận 2 tin. (Tự động thì được chặn nhờ bước kiểm hội thoại: thread đã tồn tại → `has_conversation`.) Phụ: với extension không báo status, mỗi shop chỉ gửi được 1 tin mỗi ~3 phút (`SendTimeout`).
+- Sửa gợi ý: trước khi đánh `unconfirmed`/`interrupted`, kiểm `order_conversations` / resolver của receipt. Có thread mới sau `sending_at` ⇒ coi là `sent` (ghi chú "xác nhận qua hội thoại"). Nếu không, dùng trạng thái riêng ("chưa xác nhận", badge vàng) thay vì "Gửi lỗi".
+
+**B4 — dora-1 làm rơi các số đếm skip mà Mera trả (`send_blocked_env`, `shop_offline`, `conversation_unknown`) và `run.checking` → dialog báo "thành công 0 đơn" mà không nói lý do**
+- Repo/owner: **dora-1** (backend-engineer: type D + sanitizer; frontend-engineer: dialog).
+- Bằng chứng: Mera `ReviewSkipCounts` 6 key (`review_request_service.go:240-247`). dora-1 `lib/types/delivery.ts:469` `ReviewRequestSkippedCounts` 3 key; `review-request-proxy.ts:81-88,161,177` chỉ giữ 3 key; `RequestReviewsDialog.tsx:277,328` chỉ render 3 key; `:288` toast success bất kể `queued`. Mera FE giữ mọi key (`reviewRequestApi.ts skipCounts`) nên không bị lỗi này.
+- Kịch bản 1 (prod): preview báo 10 đơn → bấm "Xác nhận gửi" → extension shop offline → Mera trả `{queued:0, skipped:{shop_offline:10}}` → dora-1 hiện toast xanh "Đã xếp hàng 0 đơn", không nói lý do.
+- Kịch bản 2 (dev/local, prefix `ZZTEST-`): preview "Sẽ gửi 0", ba ô Bỏ qua đều 0, không giải thích được (thực ra `send_blocked_env: N`).
+- Sửa gợi ý: thêm 3 key (optional, vắng = 0) vào type + sanitizer; render các key > 0 kèm nhãn (`SKIP_REASON_LABEL` thêm `send_blocked_env` "Shop không được phép gửi ở môi trường này"). Toast run: `queued === 0` ⇒ warning kèm danh sách skip; giống send (`:243-244`).
+
+**B5 — Validate biến mẫu tin của Mera quá hẹp: lỗi gõ sai dạng "gần đúng" lọt qua và tới tay buyer nguyên văn**
+- Repo/owner: **mera-fulfill-backend** (cả 2 FE có thể thêm cảnh báo).
+- Bằng chứng: `review_request_template.go:38` `\{[A-Za-z_]+\}` + `:61-75`. Bắt được `{Name}`/`{BUYER_NAME}`, nhưng **không** bắt `{ buyer_name }`, `{buyer name}`, `{shop-name}`, `{order_id }`, `{buyer_name1}`. `{{buyer_name}}` hợp lệ và render ra `{Emma}`. dora-1 `ReviewRequestSettingsDialog.tsx` / Mera FE `ReviewRequestSettingsDialog.tsx` không kiểm phía client; ô gửi tay cũng không.
+- Kịch bản: người dùng gõ "Hi { buyer_name }," → PUT 200 → toàn bộ tin tự động gửi "Hi { buyer_name }," cho khách thật. Khung xem trước có hiện nguyên văn, nhưng dễ bị bỏ sót.
+- Sửa gợi ý: coi mọi nhóm `\{[^{}\n]{0,40}\}` khác 3 biến chuẩn là lỗi; báo lỗi với `{{`/`}}`. FE: tô đỏ token lạ trong khung xem trước.
+
+**B6 — Bước kiểm hội thoại chỉ dựa vào `conversation_id`; nếu parse id thất bại thì đơn đã có thread bị coi là "chưa có hội thoại" và bị gửi tự động**
+- Repo/owner: **mera-fulfill-backend** (rẻ, phòng thủ); tham chiếu dora-1 parser.
+- Bằng chứng: `review_request_dora.go:136-153` chỉ projection `conversation_id`. dora-1 `order-conversation-sync.ts:40-43` trả `conversation_id: null` khi không đọc được id, nhưng vẫn ghi `message_count` (:254,259).
+- Kịch bản: Etsy đổi tên key id trong payload mission-control → `conversation_id` null nhưng `message_count > 0` → Mera xếp hàng gửi tự động cho đơn đã có hội thoại, vi phạm R3.
+- Sửa gợi ý: projection thêm `message_count`; `conversation_id > 0 || message_count > 0` ⇒ `has_conversation`.
+
+### Ghi chú
+
+- **N1 — `send.skipped[]` với `reason: not_found` không có nhãn.** Mera chỉ trả `tracking_id` cho lý do này (`review_request_service.go:735`). dora-1 sanitizer bỏ `tracking_id` (`review-request-proxy.ts:112-116`) nên toast hiện "—: Không tìm thấy mã" (`RequestReviewsDialog.tsx:256`); Mera FE cũng hiện "—". Gợi ý (dora-1 + Mera FE): giữ `tracking_id` và map sang `code` từ các dòng đang chọn. Mera FE thiếu nhãn cho `send_blocked_env`/`not_found`/`no_orders`/`no_receipt`/`sending` (`lib/reviewRequest.ts SKIP_REASON_LABELS`) nên hiện nguyên key.
+- **N2 — Cảnh báo trước khi gửi tay lệch với Mera.** Mera cảnh báo `already_requested` khi `sent_at != null` kể cả khi status đang `failed` (`service.go:685`). Cả 2 FE (`dora-1 lib/delivery/reviewRequest.ts isRequested`, Mera FE `orderReviewWarnings`) chỉ xét status, nên bỏ sót đơn "đã gửi trước, lần sau lỗi". dora-1 còn cảnh báo `sending`, trong khi Mera sẽ bỏ qua đơn đó với lý do `sending`. Gợi ý: thêm `sent_at != null`; với `sending` thì báo "đang gửi — sẽ bị bỏ qua". Badge `failed` + `sent_at` cũng nên ghi "đã gửi dd/MM trước đó".
+- **N3 — Đang lọc `dora:<store>` mà chạy tự động/cài đặt thì áp cho CẢ Dora.** Cả 2 FE map về `"dora"` và đều có dòng ghi chú (dora-1 `DoraScopeNote`, Mera FE `doraShopNote`). Mera BE đã hỗ trợ scope `dora:<store>` cho preview/run/summary, nên có thể truyền thẳng để chỉ chạy shop đang xem; settings vẫn dùng `dora`. Đây là lựa chọn UX, cần chủ sản phẩm quyết.
+- **N4 — Run ghi đè doc cũ.** Khi Run gặp đơn có hội thoại, nó ghi đè doc `failed` chưa từng gửi (kể cả doc gửi tay) thành `skipped/has_conversation, mode auto` (`service.go:535-543`) → badge "Gửi lỗi" của lần gửi tay bị thay bằng "Bỏ qua". Lịch sử vẫn còn ở `attempts[]`. Chấp nhận được; chỉ nên biết.
+- **N5 — Audit trigger không có số liệu.** Executor coi 200 là success nhưng không đọc body (`trigger_executor.go:287-299`) → audit không thấy `queued/skipped`. Gợi ý (admin): với `request_reviews`, parse `{queued, skipped}` vào `ExecutionResult.Message`.
+- **N6 — Ably chưa cấu hình cũng trả 409 `shop_offline`.** `publishFetchOrderConvo` trả null khi `getRest()` null (`ably-publish.ts:231-232`) → route máy trả 409 `shop_offline` → Mera ghi `skipped/shop_offline` (lý do sai). Chỉ ảnh hưởng môi trường thiếu `ABLY_API_KEY`. Có thể trả 503 riêng.
+- **N7 — Thứ tự deploy: dora-1 phải lên trước Mera fulfill.** Nếu route máy chưa có, dora-1 trả 307/404 → Mera ghi mọi ứng viên `conversation_unknown` (tự lành ở lượt sau). Extension không cần bản mới (handler `fetch-order-convo` đã có), nhưng shop còn chạy extension quá cũ (không có handler) sẽ luôn rơi vào `conversation_unknown` → không bao giờ được gửi tự động. Thất bại theo hướng an toàn.
+- **N8 — Đơn `sending` kẹt tới 24h thì không gửi tay được.** Khi `SendTimeout` hết, doc giữ `sending` tới khi sweep chốt (≤24h); trong thời gian đó gửi tay bị bỏ qua với lý do `sending`. Hành vi đúng thiết kế (không gửi lại), chỉ ghi nhận.
+- **N9 — Local/dev: tin xếp hàng không bao giờ được gửi.** Với `REVIEW_REQUESTS_WORKER=off`, doc `checking`/`queued` nằm im (plan §10 đã ghi). dora-1 summary poll 10s/lần suốt lúc dialog mở vì `queued > 0` (vô hại).
+- **N10 — `go vet ./internal/...` của fulfill fail sẵn** do `dora_api_service.go:76` (không thuộc thay đổi này). Nên sửa riêng để CI vet xanh.
+
+### Cần xác nhận (chưa tái hiện được)
+
+- **C1 — Etsy trả gì cho đơn chưa có hội thoại?** Đây đúng là tập đơn mà auto-run nhắm tới. `getOrderConvo` (`dora-extension/libs/etsy-message.js:198-215`) throw khi `!response.ok`.
+  - Nếu Etsy trả **200 + object** (có `convo_id` null): dora-1 ghi `conversation_id: null` → Mera chuyển `queued` → đúng.
+  - Nếu Etsy trả **404/4xx**: không có doc nào được ghi → mọi đơn chưa có hội thoại thành `conversation_unknown` → auto-run không bao giờ gửi được.
+
+  Không kiểm được: DB trong `.env.local` có 0 doc `order_conversations`. Cách xác nhận (read-only) trên dora-master prod: `db.order_conversations.countDocuments({conversation_id: null})` > 0 thì luồng ổn. Hoặc mở panel "Nhắn khách" của một đơn chưa từng nhắn rồi xem doc được ghi.
+
+## 4. Gợi ý thứ tự xử lý
+1. C1 (xác nhận dữ liệu): nếu sai thì toàn bộ auto-run vô hiệu.
+2. B4 (dora-1, nhỏ), B5, B6 (Mera, nhỏ).
+3. B1, B2 (Mera, cần đo tải); B3 (Mera, thiết kế trạng thái).
+4. Ghi chú N1–N10 tuỳ ưu tiên.
+
+---
+
+## Vòng 2 — 2026-10-21 (kiểm lại sau bản sửa B1–B6, N1, N4)
+
+Phạm vi: diff chưa commit ở `mera-fulfill-backend` (plan §10 là hành vi chốt), `dora-1` (types D, `review-request-proxy.ts`, `lib/delivery/reviewRequest.ts`, 2 dialog), `mera-fulfill-frontend` (bỏ qua `OrderTable.tsx`/`OrdersPage.tsx`). `mera-admin-backend` không đổi. Không sửa code.
+
+### V2.0 Kết luận
+**Không có finding chặn merge.** B1–B6, N1, N4 và C1 đã đóng, không thấy hồi quy hợp đồng dây. Còn **1 finding nên sửa** (R2-1: kết luận "đã gửi" nhờ hội thoại sai với gửi tay) và 5 ghi chú nhỏ.
+
+### V2.1 Kiểm chứng bằng thực thi
+| Lệnh | Kết quả |
 |---|---|
-| `types/deliveryTracking.ts`: `DeliveryOrderSource`, `source?`, `DeliveryDoraShopsResponse{shops: DeliveryStoreCount[]}` ↔ `DeliveryOrderView.Source`, `gin.H{"shops": ...}` | khớp |
-| `deliveryTrackingApi.doraShops` → `/v2/delivery-trackings/dora-shops`, lọc `s.store` rỗng | khớp |
-| Giá trị select `dora`/`dora:<shop>` → `qs.set('project_id', …)` → `parseDeliveryProjectID`; không ghim vào ô nhớ project chung; `realProjectId` cho link Orders / dora tag | khớp |
-| `rowFromDetail` sau refresh | **lệch**, xem M1 |
+| dora-1 `npx tsc --noEmit` | sạch (exit 0) |
+| fulfill `go build ./...` | sạch |
+| fulfill `go vet ./internal/...` | exit 1, vẫn chỉ lỗi có từ trước `dora_api_service.go:76` (N10) |
+| fulfill `go test ./internal/services -run "Review|Dora1Fetch"`, `./internal/controllers -run Review` | ok |
+| fulfill `MERA_LOCAL_MONGO=1 go test ./internal/services -run ReviewRequests -v` (mongo localhost:27017, DB tạm tự drop) | 3/3 PASS: `_Local`, `FetchChunks_Local`, `DoraAdapter_Local` |
+| admin `go build ./... && go vet ./...` | sạch |
+| Mera FE `npx tsc -b` | sạch |
+| Mera FE `vitest` reviewRequest + RequestReviewsDialog + ReviewRequestSettingsDialog + TriggerModal | 4 file, 59/59 pass |
+| Đối chiếu validate mẫu tin: chạy cùng 19 chuỗi qua regex Go BE (`go run`) và hàm FE chép nguyên văn (`node`) | dora-1 khớp BE 19/19. Mera FE lệch 4/19, đều là ngoặc lẻ (R2-2) |
 
-## Nên sửa
+### V2.2 Trạng thái finding vòng 1
+| # | Trạng thái | Bằng chứng |
+|---|---|---|
+| B1 | **Đóng** | `Run`: `context.WithoutCancel` + 5 phút (`review_request_service.go:558`), không gọi dora-1 (chỉ ghi `checking`). `Send` cũng tách context (:676). Trigger 200 nhanh. |
+| B2 | **Đóng** (phía Mera) | `issueFetches` (`review_request_worker.go:497-570`): mỗi shop 1 lô đang chờ (đếm `checking` có `checking_requested_at`), ≤50 đơn, cũ nhất trước, cách lệnh trước ≥ gap + jitter. Test `FetchChunks_Local` pass. Extension không đổi: 50 GET tuần tự không giãn, 1 POST cuối (`content.js:860-874`). Rủi ro 429 còn lại ở mức 50 GET/lô, chấp nhận theo plan. |
+| B3 | **Đóng**, nhưng có tác dụng phụ (R2-1) | Lỗi mạng/timeout → `failed+unconfirmed` (worker.go:222-225). Treo >24h hoặc crash không có message id → `settleUnknown` (:596). Doc unconfirmed được hỏi lại 30 phút/lần trong 7 ngày; DONE tới muộn được nhận (`reviewFinishable` :321). Tự động bị chặn (`reviewAutoBlocked` service.go:271, `reviewAutoFilter` :539). Badge vàng ở cả 2 FE. |
+| B4 | **Đóng** | dora-1 `normalizeSkippedCounts` giữ mọi key số (`review-request-proxy.ts:85-93`). Type có đủ 7 key Go (`delivery.ts:479-489`). Dialog render mọi key > 0 (`RequestReviewsDialog.tsx:347`). `queued===0` → toast cảnh báo kèm lý do (:281-295). Nhãn đủ 7 key + 5 reason gửi tay. |
+| B5 | **Đóng** | BE `reviewBraceRe` = `\{+[^{}\n]*\}+` hoặc ngoặc lẻ (`review_request_template.go:40`), áp cho cả settings lẫn `message` gửi tay (service.go:209, :679). Lỗi 400 trả `unknown_vars` luôn là mảng (controller.go:84-89). dora-1 chuyển tiếp nguyên body (`callMera`) → `reviewRequestErrorText` hiện token. Cả 2 FE chặn phía client (Mera FE còn hở ngoặc lẻ: R2-2). |
+| B6 | **Đóng** | `HasThread = conversation_id>0 OR message_count>0` (service.go:88). Áp lúc chọn ứng viên (`review_request_dora.go:77-86`) và lúc quyết `checking` (worker.go:408-411). Projection có `message_count` (dora.go:149). |
+| C1 | **Đóng** | Leader đã xác nhận trên prod. |
+| N1 | **Đóng** | Mã bị ẩn → `not_found` kèm `tracking_code` (service.go:692-723). Cả 2 FE giữ `tracking_id` và map sang code từ các dòng đang chọn. Đủ nhãn. |
+| N2 | **Đóng một phần** | Đã xét `sent_at`/`unconfirmed`. Còn lệch ở `sending` (R2-3). |
+| N4 | **Đóng** | `manual_failed`: lượt chạy tự động bỏ qua doc gửi tay bị lỗi (`reviewManualFailed` service.go:287; filter :542). Test `_Local` :430-438. |
+| N3, N5–N9 | Không đổi | N3 là quyết định UX. N5 thuộc admin, không đổi. N6/N7 thuộc hạ tầng dora-1. N8: doc giữ `sending` ≤24h rồi thành unconfirmed. N9 đúng thiết kế. |
+| N10 | Còn | lỗi vet có từ trước, không thuộc diff |
 
-### M1 — Mera FE: `rowFromDetail` vẫn thay `orders` của dòng bằng `orders` của detail (F3 chưa được chép sang Mera FE)
-- **Tầng:** Mera FE ↔ Mera BE · **bằng chứng:** `mera-fulfill-frontend/src/pages/tracking/TrackingPage.tsx:96` (`orders: rest.orders?.length ? rest.orders : prev.orders`). BE: list lọc theo phạm vi (`delivery_tracking_query.go:457-468`), detail/refresh trả mọi project + `dora`.
-- **Kịch bản:** trước vòng này lỗi chỉ xảy ra với mã dùng chung giữa nhiều project. Giờ có thêm Dora: đang xem `Dora - ShopA`, bấm làm mới một mã có thêm đơn Mera hoặc đơn Dora ShopB → dòng hiện cả đơn ngoài phạm vi (cột Order ID/Shop sai, nhãn Dora lẫn với link Mera) cho tới khi tải lại.
-- **Gợi ý sửa:** chép `mergeScopedOrders` của dora-1 (`lib/hooks/useDelivery.ts:120-138`, khoá `order_id + (source ?? 'mera') + store`).
+### V2.3 So khớp chéo lại các seam có thay đổi
+| Seam | Go (nguồn sự thật) | dora-1 type + sanitizer | Mera FE type + normalize |
+|---|---|---|---|
+| preview/run `skipped` | 7 key `ReviewSkipCounts` (service.go:250-259) | giữ mọi key số; 3 key gốc mặc định 0 ✓ | giữ mọi key số ✓ |
+| run | `{queued, checking, skipped}` (:519-525), `checking==queued` | ✓ (:188-192) | ✓ |
+| preview sample | 9 field, `has_conversation` *bool luôn có | ✓ đủ 9 | type thiếu `project_id`/`tracking_id`, FE không đọc → vô hại |
+| send | warnings `{order_id, etsy_receipt_id, kind}`, skipped `{order_id, tracking_id, tracking_code, reason}` | bỏ `etsy_receipt_id` (không đọc) ✓; skipped đủ ✓ | ✓ |
+| summary | `failed_recent[].unconfirmed` bool | chỉ giữ khi true ✓ | ✓ |
+| badge `orders[].review_request` | `skip_reason`/`unconfirmed` omitempty (:915-924) | optional ✓; list proxy spread `...o` ✓ | optional ✓ |
+| lỗi 400 `invalid_template`/`invalid_message` | `{error, code, unknown_vars: []}` | `DeliveryApiErrorBody.unknown_vars` ✓; chuyển tiếp nguyên ✓ | `apiUnknownVars(e.body)` ✓ (`attachResponse` gắn `body`) |
+| gửi tay có biến | `RenderReviewTemplate(msg, …)` **theo từng đơn** (service.go:807); `message` được trim rồi mới validate và render | hook gửi `message.trim()`; route giữ nguyên chuỗi không rỗng ✓ | gửi chuỗi chưa trim; BE trim ✓ |
+| độ dài | ≤2000 **rune** sau trim | `maxLength` 2000 đơn vị UTF-16, đếm cả khoảng trắng → chặt hơn BE (R2-6) | đếm `.length` UTF-16 → chặt hơn BE |
+| máy fetch convo | `FetchOrderConversations` ≤50, `requestedAt` RawMessage | route không đổi từ vòng 1: `requestedAt` ISO lấy trước khi publish, 409 `shop_offline` ✓ | — |
 
-## Ghi chú (không chặn)
-- **N1, nâng G4: ngân sách gửi lại tính riêng cho từng config, không theo thời gian còn lại của cron.** `delivery-push.ts:456-470` (225s/config), `pushDeliveryAll` tuần tự (`:566-568`), cron `maxDuration` 300. Kịch bản: Mera vừa khởi động lại (cache shop rỗng) mà admin đang lỗi → mọi chunk cuối trả 502 `mera_shops_unavailable` ngay (`delivery_external_refs.go:398-411`). Mỗi config tốn ~45s ngủ + 4 request. Từ khoảng 6 config trở lên, hàm bị cắt ở 300s: config đang chạy giữ khoá 15 phút, cron không trả JSON tổng kết. Chỉ xảy ra khi Mera/admin lỗi, và lúc đó đằng nào cũng không push được. Gợi ý sửa sau: truyền deadline từ cron (không bắt đầu config mới hoặc không gửi lại khi còn dưới ~60s), hoặc không gửi lại `mera_shops_unavailable` khi chạy từ cron.
-- **N2: đếm ≤50/shop.** FE đếm theo đơn trong phạm vi (`trackingSelection.ts:15`), Mera đếm theo mọi ref active của mã (`delivery_tracking_bulk.go:115-120`). Ở phạm vi `dora:<store>` hoặc một project, FE có thể đếm thiếu shop ngoài phạm vi. Mera trả 400 `too_many_per_shop`, FE hiện lỗi, không hỏng dữ liệu.
-- **N3, phần runtime còn lại của F2:** các route sync nền (`sheet-order.ts:68`, `tracking-import.ts:154`) không đưa promise sync vào `waitUntil` (có từ trước). Trên Vercel, việc sync rồi push có chạy hết sau khi response đóng hay không tuỳ fluid compute. Cron 30 phút bù. Cần xác nhận runtime, không phải lỗi mã.
-- **N4: option "Dora" khi chưa có shop.** dora-1 hiện "Dora" khi `doraShops = []` (`DeliveryToolbar.tsx:33`, `!== null`), Mera FE ẩn khi rỗng (`TrackingPage.tsx:153`, `length > 0`). Vô hại (chọn thì ra danh sách rỗng), chỉ là hai bên không nhất quán.
-- **N5: khoá `orderKey`** (`useDelivery.ts:120-122`): nếu 2 sheet_config cùng đẩy một `(code, order_id, store)`, mã sẽ có 2 ref dora trùng khoá và `Map` gộp làm một. Hiếm (cùng đơn ở 2 sheet); hiển thị vẫn đúng dữ liệu.
-- **N6: `DELIVERY_PUSH` chỉ nên đặt ở production.** Preview dùng chung Mongo sẽ chia khoá nên không chạy song song; preview dùng Mongo riêng mà chép `sheet_configs` sẽ đẩy cùng scope và làm hai bên supersede nhau.
-- **N7: comment cũ ở Mera:** `externalLockWait` ghi "below dora-1's 30s request timeout" (`delivery_external_refs.go:55`). Chunk cuối giờ là 45s. Vẫn đúng (20s < 45s), chỉ cần sửa chữ.
-- G2, G3, G5–G9 của vòng 1 giữ nguyên.
+**State machine của worker (đọc code + test local):** `checking` (chưa có `checking_requested_at`) → `issueFetches` gán `checking_requested_at` (đồng hồ dora-1) → `settleChecking`: có `fetched_at ≥ requested` thì đi tiếp (`queued`, hoặc `skipped/has_conversation`); quá 15 phút thì `skipped/conversation_unknown`; 409 thì mọi doc đang chờ của shop → `skipped/shop_offline` → `ClaimNext` (FindOneAndUpdate nguyên tử) → `sending` → DONE ⇒ `sent`, FAILED/CANCELLED ⇒ `failed`; lỗi mạng ⇒ `failed+unconfirmed`; offline ⇒ `queued` +30 phút, quá 24h ⇒ `failed`. Hết SendTimeout thì giữ `sending`, sweep 2 phút/lần; quá 24h ⇒ `settleUnknown`. Lease: upsert, trùng key thì nhường. Các thao tác ghi khi chốt dùng `WithoutCancel`. Không thấy đường nào gửi trùng 1 doc.
+
+### V2.4 Finding còn lại (xếp theo mức độ)
+
+**R2-1 — Nên sửa · Mera fulfill BE · "Có hội thoại ⇒ đã gửi" sai với gửi tay: mọi lần gửi tay chưa rõ kết quả đều thành `sent`**
+- Bằng chứng: `review_request_worker.go:574-592` (`reviewThreadExists` chỉ hỏi "có thread không", không hỏi "thread/tin có mới hơn `sending_at` không"). Hàm này được gọi từ `settleUnknown` :596-604 (crash, không có message id; hoặc >24h chưa DONE) và từ nhánh `d.Unconfirmed` :668-674. Gửi tay không lọc hội thoại, và R4 nhắm đúng đơn **đã có** hội thoại (`service.go:784-824`). Test local chỉ phủ `mode: auto` (`zz_review_requests_local_test.go:368,385-400`).
+- Kịch bản: gửi tay cho đơn đã có thread → dora-1 timeout (lỗi mạng) → `failed+unconfirmed`. Lần sweep kế tiếp: `order_conversations.conversation_id > 0` (thread cũ) → `sent`, `confirmed_by: conversation`, gán `sent_at`. Badge "Đã xin review · dd/MM" dù tin có thể chưa đi. Người dùng không biết để gửi lại. Badge vàng "Chưa xác nhận" (B3) gần như không bao giờ xuất hiện với gửi tay. Sai theo hướng an toàn (không nhắn trùng) nên không chặn merge, nhưng số liệu `sent_today` và badge sai.
+- Sửa gợi ý: chỉ dùng bằng chứng hội thoại khi `d.Mode == auto` (lúc `checking` đã xác nhận không có thread). Với gửi tay: chỉ coi là đã gửi khi `fetched_at > sending_at` **và** có tin mới sau `sending_at` (vd `message_count` tăng, hoặc thời điểm tin cuối > `sending_at`, nếu doc có lưu). Nếu không, giữ `unconfirmed`. Thêm 1 case test `mode: manual`.
+
+**R2-2 — Ghi chú · Mera FE · validate client bỏ sót ngoặc lẻ**
+- Bằng chứng: `mera-fulfill-frontend/src/lib/reviewRequest.ts` `invalidTemplateTokens` chỉ dùng `/\{+[^{}\n]*\}+/g`, trong khi BE bắt thêm `{` và `}` đứng lẻ (`review_request_template.go:40`). Đã chạy thử: "Hi {buyer_name", "thanks}", "{buyer\nname}", "a { b" → FE cho qua, BE trả 400.
+- Ảnh hưởng: không có tin sai nào tới tay buyer. BE từ chối, FE hiện token từ `unknown_vars` (`serverVars`). Người dùng chỉ thấy lỗi sau khi bấm Lưu/Gửi thay vì thấy ngay. dora-1 khớp BE 19/19.
+- Sửa: thêm nhánh ngoặc lẻ vào regex (hoặc chép cách làm của dora-1).
+
+**R2-3 — Ghi chú · cả 2 FE · đơn `sending` bị cảnh báo "Đã xin review" nhưng BE bỏ qua với lý do `sending`** (phần còn lại của N2)
+- Bằng chứng: dora-1 `lib/delivery/reviewRequest.ts` `isRequested` (status `sending` → already_requested); Mera FE `isAlreadyRequested`. BE: `reviewManualWarnings` (service.go:659-668) không có `sending`; filter upsert `status != sending` (:810) → skipped `sending`.
+- Sửa: với `sending`, hiện "Đang gửi — sẽ bị bỏ qua" thay vì cảnh báo "đã xin". Sau khi gửi, toast "bỏ qua" đã ghi đúng lý do, nên đây chỉ là chênh lệch nhãn trước khi gửi.
+
+**R2-4 — Ghi chú · Mera BE · `Maintain` có thể chạy lâu hơn lease**
+- Bằng chứng: `issueFetches` gọi dora-1 tuần tự từng shop, mỗi lần tối đa 45s (`worker.go:473,512-568`), trong lúc đó không gia hạn lease. `leaseTTL = 4×tick + 1m` = 2m (:111).
+- Kịch bản: dora-1 treo, ≥3 shop → một tick quá 2 phút. Nếu chạy >1 replica, replica khác chiếm lease và có thể gửi lại cùng lô fetch (`fetchNext` nằm trong bộ nhớ; kiểm in-flight rồi gán `checking_requested_at` không nguyên tử). Không gửi tin trùng (`ClaimNext` nguyên tử), chỉ nhân đôi lệnh đọc Etsy. Với 1 replica: chỉ làm chậm việc khởi động goroutine cho shop mới.
+- Sửa: gia hạn lease giữa các shop, hoặc giới hạn tổng thời gian `issueFetches` mỗi tick, hoặc "claim" lô trước khi gọi (gán placeholder rồi mới gọi dora-1).
+
+**R2-5 — Ghi chú · Mera BE · `settleChecking` lấy 500 doc không sắp xếp**
+- Bằng chứng: `worker.go:426-427` (`SetLimit(500)`, không sort).
+- Ảnh hưởng: khi >10 shop cùng có lô đang chờ (≤50 doc mỗi lô), các doc ngoài 500 doc đầu chỉ được xét sau khi doc trước được chốt hoặc hết 15 phút → kết quả trễ tới 15 phút, lô kế của shop đó cũng bị giữ lại. Đúng đắn vẫn giữ: kết quả fetch được ưu tiên hơn timeout (`reviewCheckDecision` :408).
+- Sửa: sort `checking_requested_at` tăng dần, hoặc đọc theo trang.
+
+**R2-6 — Ghi chú · 2 FE vs BE · đếm độ dài khác đơn vị**
+- FE đếm UTF-16 (emoji = 2) và đếm cả khoảng trắng đầu/cuối; BE đếm rune sau trim. FE chỉ chặt hơn, không bao giờ cho qua thứ BE từ chối. Ghi nhận, không cần sửa.
+
+### V2.5 Gợi ý thứ tự
+1. R2-1 (Mera BE, nhỏ: thêm điều kiện `mode`/thời điểm + 1 test).
+2. R2-2, R2-3 (FE, vài dòng).
+3. R2-4, R2-5 khi chạy nhiều replica / nhiều shop Dora.

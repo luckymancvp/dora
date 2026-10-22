@@ -84,8 +84,9 @@ function badResponse(status: number): DeliveryProxyError {
 /**
  * Gọi Mera + ánh xạ lỗi theo bảng §3.2. 2xx → body object; còn lại throw DeliveryProxyError.
  * Lỗi mạng/thiếu env: meraFetch tự throw MeraApiError (502 mera_unavailable / 503 mera_not_configured).
+ * Export cho các proxy Mera khác (review-request-proxy.ts) dùng chung đúng bảng lỗi này.
  */
-async function callMera(path: string, init: MeraFetchInit): Promise<Json> {
+export async function callMera(path: string, init: MeraFetchInit): Promise<Json> {
   const { status, data } = await meraFetch(path, init);
   if (status >= 200 && status < 300) {
     if (!isPlainObject(data)) throw badResponse(status);

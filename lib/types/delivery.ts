@@ -75,6 +75,11 @@ export interface DeliveryTrackingOrder {
   /** MỚI (plan §5). Vắng = "mera". */
   source?: DeliveryOrderSource;
   items: DeliveryTrackingOrderItem[];
+  /**
+   * Request reviews (plan request-reviews §5): bản ghi sổ `review_requests` của đơn này.
+   * null = chưa từng xin review; vắng = Mera BE cũ (coi như null). Badge cột Status đọc field này.
+   */
+  review_request?: DeliveryOrderReviewRequest | null;
 }
 
 export interface DeliveryTracking {
@@ -285,6 +290,8 @@ export interface DeliveryApiErrorBody {
   /** too_many_per_shop. */
   count?: number;
   limit?: number;
+  /** invalid_template (review-requests settings): token biến không hợp lệ trong mẫu, vd "{name}". */
+  unknown_vars?: string[];
 }
 
 // =====================================================================================
@@ -389,4 +396,219 @@ export interface DeliveryPushResult {
 export interface DeliveryPushCronResponse {
   ok: true;
   results: DeliveryPushResult[];
+}
+
+// =====================================================================================
+// D. Request reviews (plan D:\Pamo\Mera\_workspace\request-reviews\01_plan.md §3–§5, §8)
+//    Mirror NGUYÊN VĂN JSON Mera `/api/v2/review-requests/*` (snake_case). Proxy dora-1:
+//    `app/api/delivery/review-requests/*` (contract _workspace/01 §3). project_id = hex | "dora"
+//    (UI dora-1: "dora" và "dora:<store>" đều → "dora"; "Tất cả" phải chọn project trước).
+// =====================================================================================
+
+/** Trạng thái 1 doc sổ `review_requests`. `checking` = đang chờ extension đọc lại hội thoại từ Etsy. */
+export type ReviewRequestStatus = "checking" | "queued" | "sending" | "sent" | "failed" | "skipped";
+export type ReviewRequestMode = "auto" | "manual";
+
+/** Lý do bỏ qua (skip_reason của sổ ghi / khoá đếm trong preview/run). */
+export type ReviewRequestSkipReason =
+  | "has_conversation"
+  | "reviewed"
+  | "already_requested"
+  | "conversation_unknown"
+  | "shop_offline";
+
+/** `orders[].review_request` trên list/detail delivery-tracking (badge dòng). */
+export interface DeliveryOrderReviewRequest {
+  status: ReviewRequestStatus;
+  mode: ReviewRequestMode;
+  /** RFC3339; null khi chưa gửi xong. */
+  sent_at: string | null;
+  /** "" khi không lỗi. */
+  error: string;
+  /** Chỉ có nghĩa khi status = "skipped"; vắng/"" ở trạng thái khác (rollout lag: có thể vắng hẳn). */
+  skip_reason?: ReviewRequestSkipReason | "";
+  /**
+   * Chỉ có (true) khi status = "failed" mà không rõ kết quả (Mera "unconfirmed"/"interrupted": dora-1 chưa
+   * báo DONE/FAILED) — buyer có thể ĐÃ nhận tin. Vắng = false. Badge "Chưa xác nhận" thay "Gửi lỗi".
+   */
+  unconfirmed?: boolean;
+}
+
+/** Biến mẫu tin mặc định — FE dùng khi `variables` Mera trả rỗng. Dạng có ngoặc nhọn. */
+export const REVIEW_REQUEST_VARIABLES = ["{buyer_name}", "{order_id}", "{shop_name}"] as const;
+export const REVIEW_REQUEST_TEMPLATE_MAX = 2000;
+export const REVIEW_REQUEST_MAX_DAYS_MIN = 1;
+export const REVIEW_REQUEST_MAX_DAYS_MAX = 30;
+export const REVIEW_REQUEST_MAX_DAYS_DEFAULT = 7;
+
+/** GET/PUT /api/delivery/review-requests/settings. */
+export interface ReviewRequestSettings {
+  /** hex | "dora". */
+  project_id: string;
+  template: string;
+  /** 1–30. Cửa sổ ứng viên = đơn giao trong max_days ngày gần nhất. */
+  max_days: number;
+  /** true = chưa có doc cài đặt, đang dùng mặc định. */
+  is_default: boolean;
+  default_template: string;
+  /** Token biến, vd "{buyer_name}". Route dora-1 bảo đảm là mảng (rỗng → FE dùng REVIEW_REQUEST_VARIABLES). */
+  variables: string[];
+  /** "" khi is_default. */
+  updated_by: string;
+  updated_at: string | null;
+}
+
+/** PUT body. */
+export interface ReviewRequestSettingsUpdate {
+  project_id: string;
+  /** ≤ REVIEW_REQUEST_TEMPLATE_MAX; "" = về mẫu mặc định (Mera quyết). */
+  template: string;
+  max_days: number;
+}
+
+/** Body chung của preview / run (chỉ project). */
+export interface ReviewRequestProjectBody {
+  project_id: string;
+}
+
+/**
+ * Đếm đơn bị loại (preview/run), theo lý do. Route dora-1 GIỮ MỌI key số Mera trả (Mera có thể thêm
+ * lý do mới trước khi dora-1 kịp cập nhật — FE render key > 0, key lạ hiện nguyên tên) và bảo đảm 3
+ * key gốc luôn có (thiếu → 0). Key đã biết khác: vắng = 0.
+ */
+export interface ReviewRequestSkippedCounts {
+  has_conversation: number;
+  reviewed: number;
+  already_requested: number;
+  /** Shop không được phép gửi ở môi trường này (DORA_SEND_SHOP_PREFIX, vd dev chỉ ZZTEST-). */
+  send_blocked_env?: number;
+  shop_offline?: number;
+  conversation_unknown?: number;
+  manual_failed?: number;
+  [reason: string]: number | undefined;
+}
+
+/**
+ * 1 đơn mẫu trong preview (≤20). Route dora-1 bảo đảm đủ key: chuỗi vắng → "", delivered_at /
+ * has_conversation vắng → null.
+ */
+export interface ReviewRequestPreviewSample {
+  order_id: string;
+  etsy_receipt_id: string;
+  /** hex | "dora" — project của đơn. */
+  project_id: string;
+  /** DeliveryTracking.id. */
+  tracking_id: string;
+  shop_name: string;
+  store: string;
+  tracking_code: string;
+  /** RFC3339; null khi Mera không trả. */
+  delivered_at: string | null;
+  /**
+   * Kết quả resolver hội thoại: false = chưa thấy hội thoại → sẽ nhờ extension kiểm lại trước khi gửi
+   * (tính vào will_check_conversation); null = chưa xác định.
+   */
+  has_conversation: boolean | null;
+}
+
+/** POST /api/delivery/review-requests/preview. */
+export interface ReviewRequestPreview {
+  /** Số đơn sẽ được xếp hàng (sau khi trừ skipped). */
+  candidates: number;
+  /** Trong candidates: số đơn cần kiểm lại hội thoại từ Etsy trước khi gửi. */
+  will_check_conversation: number;
+  skipped: ReviewRequestSkippedCounts;
+  /** Route dora-1 bảo đảm là mảng. */
+  sample: ReviewRequestPreviewSample[];
+}
+
+/** POST /api/delivery/review-requests/run — ghi hàng đợi, KHÔNG chờ gửi xong. */
+export interface ReviewRequestRunResult {
+  /** Đơn nhận vào hàng đợi (mọi đơn bắt đầu ở "checking": đọc lại hội thoại trước khi gửi). */
+  queued: number;
+  /** Trong queued: số đơn đang chờ đọc lại hội thoại. Vắng → 0. */
+  checking: number;
+  skipped: ReviewRequestSkippedCounts;
+}
+
+/** POST /api/delivery/review-requests/send body. */
+export interface ReviewRequestSendRequest {
+  /** DeliveryTracking.id; ≤ BULK_MAX_PER_SHOP mã / shop (Mera kiểm lại). */
+  ids: string[];
+  /** Vắng / "" (sau trim) = dùng mẫu của project từng đơn. Route dora-1 bỏ field khi rỗng. */
+  message?: string;
+  /**
+   * hex | "dora" — giới hạn đơn được xếp hàng vào project đang xem (mã có đơn ở nhiều project).
+   * Vắng = Mera xếp hàng mọi đơn của mã. Route dora-1 chuyển tiếp nguyên, "" (sau trim) → bỏ field.
+   */
+  project_id?: string;
+}
+
+/** Cảnh báo (không chặn) khi gửi tay. */
+export interface ReviewRequestSendWarning {
+  order_id: string;
+  kind: "already_requested" | "reviewed";
+}
+
+/** Đơn/mã không xếp hàng được khi gửi tay. Route dora-1 bảo đảm đủ key (chuỗi vắng → ""). */
+export interface ReviewRequestSendSkipped {
+  /** "" khi cả mã bị bỏ (vd không tìm thấy tracking). */
+  order_id: string;
+  /** DeliveryTracking.id — với reason "not_found" Mera CHỈ có field này (FE map sang code từ dòng đang chọn). */
+  tracking_id: string;
+  tracking_code: string;
+  /** Mã lý do Mera (vd "not_found", "no_orders", "sending"); FE hiện nguyên văn nếu không biết. */
+  reason: string;
+}
+
+/** POST /api/delivery/review-requests/send. Route dora-1 bảo đảm warnings/skipped là mảng. */
+export interface ReviewRequestSendResult {
+  queued: number;
+  warnings: ReviewRequestSendWarning[];
+  skipped: ReviewRequestSendSkipped[];
+}
+
+/** Route dora-1 bảo đảm đủ key (chuỗi vắng → "", at vắng → null). */
+export interface ReviewRequestFailedItem {
+  order_id: string;
+  shop_name: string;
+  error: string;
+  /** RFC3339 — thời điểm lần lỗi; null khi Mera không trả. */
+  at: string | null;
+  /** true = lỗi "chưa xác nhận" (không rõ buyer đã nhận tin chưa). Route dora-1: chỉ giữ khi === true. */
+  unconfirmed?: boolean;
+}
+
+/** GET /api/delivery/review-requests/summary?project_id=. Route dora-1 bảo đảm failed_recent là mảng. */
+export interface ReviewRequestSummary {
+  /** Đang chờ gửi — ĐÃ GỒM checking. */
+  queued: number;
+  /** Trong queued: số đơn đang chờ đọc lại hội thoại. Vắng → 0. */
+  checking: number;
+  sending: number;
+  sent_today: number;
+  failed_recent: ReviewRequestFailedItem[];
+}
+
+// --- Endpoint máy dora-1 (Mera fulfill gọi) — POST /api/machine/order-conversations/fetch ---
+
+export const MACHINE_ORDER_CONVO_FETCH_MAX = 50;
+
+export interface MachineOrderConvoFetchRequest {
+  shopName: string;
+  /** Etsy receipt id, số nguyên dương; 1..MACHINE_ORDER_CONVO_FETCH_MAX (sau khi bỏ trùng). */
+  orderIds: number[];
+}
+
+/** 200. `requestedAt` = giờ server dora-1 lấy NGAY TRƯỚC publish (ISO) — Mera so với order_conversations.fetched_at. */
+export interface MachineOrderConvoFetchResponse {
+  ok: true;
+  requestedAt: string;
+}
+
+/** 409 — không có extension online cho shop. */
+export interface MachineOrderConvoFetchOffline {
+  ok: false;
+  error: string;
+  code: "shop_offline";
 }

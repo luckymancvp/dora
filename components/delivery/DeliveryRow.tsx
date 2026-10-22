@@ -16,6 +16,7 @@ import {
 } from "@/lib/delivery/deliveryTracking";
 import { doraOrdersLink, isDoraSheetOrder } from "@/lib/delivery/orderLink";
 import { collectItemReviews } from "@/lib/delivery/review";
+import { reviewRequestBadge, type ReviewRequestBadgeTone } from "@/lib/delivery/reviewRequest";
 import type { DeliveryTracking } from "@/lib/types/delivery";
 import { cn } from "@/lib/utils";
 
@@ -23,6 +24,14 @@ import { cn } from "@/lib/utils";
 const MAX_ORDERS_SHOWN = 3;
 /** Số dòng đánh giá sao hiện trong cột Status trước khi gộp "+N" (mở drawer). */
 const MAX_REVIEWS_SHOWN = 2;
+
+/** Màu badge Request reviews (cột Status). */
+const REVIEW_REQUEST_TONE_CLASS: Record<ReviewRequestBadgeTone, string> = {
+  ok: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300",
+  pending: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300",
+  error: "border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-300",
+  muted: "border-border bg-muted text-muted-foreground",
+};
 
 /** Nhãn nhỏ "Dora" cạnh mã đơn `source=dora_sheet` (dòng Google Sheet đẩy từ dora-1). */
 export function DoraSourceBadge() {
@@ -73,6 +82,11 @@ export function DeliveryRow({
   const hiddenReviews = reviews.length - shownReviews.length;
   // Nhãn item chỉ cần khi mã mang nhiều item (để biết sao của item nào).
   const multiItem = row.orders.reduce((n, o) => n + (o.items?.length ?? 0), 0) > 1;
+  // Badge Request reviews theo đơn (review_request vắng = Mera BE cũ → không badge).
+  const reviewRequestBadges = row.orders.flatMap((o, i) => {
+    const b = reviewRequestBadge(o.review_request);
+    return b ? [{ key: `${o.order_id}-${i}`, orderId: o.order_id, badge: b }] : [];
+  });
   // Link tra cứu của hãng (Etsy chỉ trả link hãng khi đã giao → dựng theo tên hãng); trang Etsy giữ ở chữ "Etsy".
   const trackUrl = carrierTrackingUrl(row);
   const etsyUrl = etsyTrackingPage(row);
@@ -233,6 +247,23 @@ export function DeliveryRow({
             </span>
           )}
         </div>
+        {reviewRequestBadges.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {reviewRequestBadges.map(({ key, orderId, badge }) => (
+              <span
+                key={key}
+                className={cn(
+                  "inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-px text-[11px]",
+                  REVIEW_REQUEST_TONE_CLASS[badge.tone],
+                )}
+                title={row.orders.length > 1 ? `${orderId}: ${badge.title}` : badge.title}
+              >
+                {row.orders.length > 1 && <span className="mr-1 font-mono opacity-80">{orderId}</span>}
+                {badge.label}
+              </span>
+            ))}
+          </div>
+        )}
         {row.latest_event ? (
           <div className="mt-0.5">
             <div className="line-clamp-2 text-xs text-foreground/80" title={row.latest_event.desc}>
