@@ -34,6 +34,7 @@ import {
   trackingUrlSearch,
   type TrackingUrlState,
 } from "@/lib/delivery/deliveryTracking";
+import { hasPendingReviewRequest } from "@/lib/delivery/reviewRequest";
 import { exportTrackingXlsx } from "@/lib/delivery/trackingExport";
 import { togglePage, toggleSelection, type TrackingSelection } from "@/lib/delivery/trackingSelection";
 import type { BulkRefreshJob, DeliveryTracking, DeliveryTrackingListResponse } from "@/lib/types/delivery";
@@ -117,7 +118,14 @@ function DeliveryScreen({ initial }: { initial: TrackingUrlState }) {
   const list = useDeliveryTrackings(params);
   const projects = useDeliveryProjects();
   const data = list.data;
-  const loading = list.isFetching;
+  // Lần tải ngầm (tự cập nhật badge Request reviews) không bật spinner; đổi bộ lọc / bấm "Tải lại" vẫn bật.
+  const [manualReload, setManualReload] = useState(false);
+  const reviewPolling = hasPendingReviewRequest(data?.items);
+  const loading = list.isFetching && (!reviewPolling || list.isPlaceholderData || manualReload);
+  const handleReload = useCallback(() => {
+    setManualReload(true);
+    void list.refetch().finally(() => setManualReload(false));
+  }, [list]);
   const total = data?.total ?? 0;
   const showDelivered = isDeliveredReviewTab(filters.status);
 
@@ -292,7 +300,7 @@ function DeliveryScreen({ initial }: { initial: TrackingUrlState }) {
         data={data}
         loading={loading}
         onChange={update}
-        onReload={() => void list.refetch()}
+        onReload={handleReload}
       />
 
       {list.error && (

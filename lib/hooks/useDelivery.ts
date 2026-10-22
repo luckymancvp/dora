@@ -8,6 +8,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { buildDeliveryTrackingQuery } from "@/lib/delivery/deliveryTracking";
+import { REVIEW_PENDING_POLL_MS, hasPendingReviewRequest } from "@/lib/delivery/reviewRequest";
 import type {
   BulkRefreshJob,
   BulkRefreshRequest,
@@ -82,6 +83,9 @@ export function useDeliveryTrackings(p: DeliveryTrackingListParams) {
     // Giữ rows trang trước khi đổi trang/filter để bảng không nhấp nháy.
     placeholderData: keepPreviousData,
     staleTime: 15_000,
+    // Còn đơn "Đang chờ gửi" (Request reviews) → tự tải lại tới khi worker Mera gửi xong.
+    refetchInterval: (q) =>
+      hasPendingReviewRequest(q.state.data?.items) ? REVIEW_PENDING_POLL_MS : false,
   });
 }
 

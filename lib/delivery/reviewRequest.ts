@@ -253,6 +253,19 @@ function isRequested(rr: DeliveryOrderReviewRequest | null | undefined): boolean
   return err.startsWith("unconfirmed") || err.startsWith("interrupted");
 }
 
+/** Khoảng tự tải lại danh sách khi còn đơn chưa gửi xong (badge "Đang chờ gửi"). */
+export const REVIEW_PENDING_POLL_MS = 10_000;
+
+/** Còn đơn nào đang trong hàng đợi / kiểm hội thoại / đang gửi — trạng thái sẽ tự đổi phía Mera. */
+export function hasPendingReviewRequest(rows: Pick<DeliveryTracking, "orders">[] | null | undefined): boolean {
+  return (rows ?? []).some((r) =>
+    (r.orders ?? []).some((o) => {
+      const s = o.review_request?.status;
+      return s === "queued" || s === "checking" || s === "sending";
+    }),
+  );
+}
+
 export interface ManualWarning {
   order_id: string;
   store: string;
