@@ -93,3 +93,11 @@ Ghi chú:
 - `lib/services/delivery-proxy.ts`: `LIST_QUERY_KEYS` thêm `review_request`. Proxy KHÔNG validate `date_field` (chuyển tiếp nguyên) ⇒ `requested` tự qua; giá trị lạ → Mera 400 `invalid_review_request` chuyển tiếp nguyên.
 - `ReviewRequestPreview.sample_truncated: boolean` (sanitizer `=== true`, vắng → false); `sample` giờ là toàn bộ ứng viên (≤5000).
 - Việc của FE: `lib/delivery/deliveryTracking.ts` (`buildDeliveryTrackingQuery` dòng ~209, parse URL ~264/282) đang ép `date_field` về `paid|ship` và chưa map `reviewRequest` → phải sửa để `requested` / `review_request` thật sự tới proxy.
+
+## § Sửa được "Mẫu mặc định" (plan §15, 2026-10-22)
+
+- `ReviewRequestTemplate` thêm `customized: boolean` (sanitizer `=== true`, vắng → false) và `editable: boolean` (Mera trả boolean thì giữ; vắng/Mera cũ → `!is_system`).
+- Type mới `ReviewRequestTemplateUpdate { content: string; title?: string }` = body PUT (`ReviewRequestTemplateInput` vẫn gán được). `updateReviewRequestTemplate(id, body: ReviewRequestTemplateUpdate, actor)`.
+- `PUT /api/delivery/review-requests/templates/[id]`: id `"default"` → `title` tuỳ chọn (có thì phải là chuỗi, chuyển tiếp); id khác vẫn bắt `title` chuỗi. `content` luôn bắt buộc chuỗi. Lỗi Mera (`invalid_template` +`unknown_vars`…) chuyển tiếp nguyên.
+- Route mới `POST /api/delivery/review-requests/templates/default/reset` (file `app/api/delivery/review-requests/templates/[id]/reset/route.ts` — đặt dưới `[id]` để không tạo thư mục tĩnh `default` cạnh `[id]`) → Mera `POST /api/v2/review-requests/templates/default/reset` → 200 `ReviewRequestTemplate`. id ≠ "default" → 404 `template_not_found` do dora-1 trả (Mera không có endpoint). Service `resetDefaultReviewRequestTemplate(actor)`.
+- `DELETE /templates/default` không đổi (Mera 403 `system_template`).

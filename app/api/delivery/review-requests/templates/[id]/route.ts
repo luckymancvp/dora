@@ -6,9 +6,11 @@ import {
   deleteReviewRequestTemplate,
   updateReviewRequestTemplate,
 } from "@/lib/services/review-request-proxy";
-import type {
-  ReviewRequestTemplate,
-  ReviewRequestTemplateDeleteResult,
+import {
+  REVIEW_REQUEST_DEFAULT_TEMPLATE_ID,
+  type ReviewRequestTemplate,
+  type ReviewRequestTemplateDeleteResult,
+  type ReviewRequestTemplateUpdate,
 } from "@/lib/types/delivery";
 
 export const runtime = "nodejs";
@@ -19,7 +21,9 @@ type Ctx = { params: Promise<{ id: string }> };
 /**
  * PUT /api/delivery/review-requests/templates/:id — body `{title, content}` (chỉ kiểm KIỂU, gửi nguyên
  * văn). Service encode id trước khi ghép path Mera. Lỗi Mera chuyển tiếp nguyên: 400 invalid_title |
- * invalid_template (+unknown_vars) | duplicate_title, 403 system_template (id "default"), 404 template_not_found.
+ * invalid_template (+unknown_vars) | duplicate_title, 404 template_not_found.
+ * §15: id "default" sửa được NỘI DUNG — tiêu đề cố định nên `title` tuỳ chọn (có thì chuyển tiếp, Mera bỏ
+ * qua / kiểm bằng "Mẫu mặc định"); mẫu thường vẫn bắt `title`.
  */
 export async function PUT(req: NextRequest, ctx: Ctx) {
   try {
@@ -29,16 +33,18 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
 
     const raw = await readJsonObject(req);
     if (!raw) return deliveryBadRequest("Body phải là JSON object", "invalid_body");
-    if (typeof raw.title !== "string") return deliveryBadRequest("title phải là chuỗi", "invalid_body");
+    const isDefault = id === REVIEW_REQUEST_DEFAULT_TEMPLATE_ID;
+    if (isDefault ? raw.title !== undefined && typeof raw.title !== "string" : typeof raw.title !== "string") {
+      return deliveryBadRequest("title phải là chuỗi", "invalid_body");
+    }
     if (typeof raw.content !== "string") {
       return deliveryBadRequest("content phải là chuỗi", "invalid_body");
     }
 
-    const body: ReviewRequestTemplate = await updateReviewRequestTemplate(
-      id,
-      { title: raw.title, content: raw.content },
-      gate.email,
-    );
+    const payload: ReviewRequestTemplateUpdate = { content: raw.content };
+    if (typeof raw.title === "string") payload.title = raw.title;
+
+    const body: ReviewRequestTemplate = await updateReviewRequestTemplate(id, payload, gate.email);
     return NextResponse.json(body);
   } catch (err) {
     return deliveryErrorResponse(err, "PUT /api/delivery/review-requests/templates/:id");

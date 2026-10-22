@@ -507,8 +507,15 @@ export interface ReviewRequestTemplate {
   title: string;
   /** ≤ REVIEW_REQUEST_TEMPLATE_MAX; chỉ được chứa biến REVIEW_REQUEST_VARIABLES (Mera kiểm, B5). */
   content: string;
-  /** true = mẫu hệ thống (`default`) — Mera trả 403 system_template nếu sửa/xoá. */
+  /**
+   * true = mẫu hệ thống (`default`): không xoá được (403 system_template), tiêu đề cố định; từ §15 nội dung
+   * SỬA ĐƯỢC (xem `editable`).
+   */
   is_system: boolean;
+  /** §15: true = mẫu `default` đang dùng bản sửa (khác nội dung gốc) → FE hiện "Khôi phục mẫu gốc". Vắng → false. */
+  customized: boolean;
+  /** §15: sửa được nội dung (Mera trả true cho mọi mẫu, kể cả `default`). Mera cũ không trả → `!is_system`. */
+  editable: boolean;
   /** Email; "" với mẫu hệ thống / Mera không trả. */
   created_by: string;
   updated_by: string;
@@ -531,6 +538,15 @@ export interface ReviewRequestTemplatesResponse {
 export interface ReviewRequestTemplateInput {
   title: string;
   content: string;
+}
+
+/**
+ * Body PUT /templates/:id. `title` bắt buộc với mẫu thường (route dora-1 kiểm); với id "default" (§15) tiêu đề
+ * cố định ⇒ `title` tuỳ chọn (Mera bỏ qua / đòi bằng "Mẫu mặc định"). ReviewRequestTemplateInput gán được vào đây.
+ */
+export interface ReviewRequestTemplateUpdate {
+  content: string;
+  title?: string;
 }
 
 /** DELETE /api/delivery/review-requests/templates/:id → 200. */

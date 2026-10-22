@@ -3,6 +3,7 @@ import "server-only";
 import { asNumber, asString } from "@/lib/services/etsy-utils";
 import { callMera, DeliveryProxyError } from "@/lib/services/delivery-proxy";
 import {
+  REVIEW_REQUEST_DEFAULT_TEMPLATE_ID,
   REVIEW_REQUEST_MAX_DAYS_DEFAULT,
   type ReviewRequestFailedItem,
   type ReviewRequestPreview,
@@ -21,6 +22,7 @@ import {
   type ReviewRequestTemplate,
   type ReviewRequestTemplateDeleteResult,
   type ReviewRequestTemplateInput,
+  type ReviewRequestTemplateUpdate,
   type ReviewRequestTemplatesResponse,
 } from "@/lib/types/delivery";
 
@@ -94,6 +96,9 @@ function normalizeTemplate(o: Json): ReviewRequestTemplate {
     title: asString(o.title),
     content: asString(o.content),
     is_system: o.is_system === true,
+    // §15: chỉ nhận true thật (vắng = chưa sửa). editable vắng (Mera trước §15) ⇒ suy từ is_system như luật cũ.
+    customized: o.customized === true,
+    editable: typeof o.editable === "boolean" ? o.editable : o.is_system !== true,
     created_by: asString(o.created_by),
     updated_by: asString(o.updated_by),
     updated_at: timeOrNull(o.updated_at),
@@ -292,7 +297,7 @@ export async function createReviewRequestTemplate(
 /** PUT /api/v2/review-requests/templates/:id — 403 system_template / 404 template_not_found chuyển tiếp nguyên. */
 export async function updateReviewRequestTemplate(
   id: string,
-  body: ReviewRequestTemplateInput,
+  body: ReviewRequestTemplateUpdate,
   actorEmail: string,
 ): Promise<ReviewRequestTemplate> {
   const data = await callMera(`${BASE}/templates/${encodeURIComponent(id)}`, {
@@ -313,4 +318,18 @@ export async function deleteReviewRequestTemplate(
 ): Promise<ReviewRequestTemplateDeleteResult> {
   await callMera(`${BASE}/templates/${encodeURIComponent(id)}`, { method: "DELETE", actorEmail });
   return { ok: true };
+}
+
+/**
+ * POST /api/v2/review-requests/templates/default/reset (§15) — bỏ bản sửa, về nội dung gốc trong code Mera.
+ * Chỉ mẫu `default` có endpoint này (route dora-1 chặn id khác). Trả mẫu sau khi khôi phục.
+ */
+export async function resetDefaultReviewRequestTemplate(
+  actorEmail: string,
+): Promise<ReviewRequestTemplate> {
+  const data = await callMera(
+    `${BASE}/templates/${encodeURIComponent(REVIEW_REQUEST_DEFAULT_TEMPLATE_ID)}/reset`,
+    { method: "POST", actorEmail },
+  );
+  return templateFromBody(data);
 }

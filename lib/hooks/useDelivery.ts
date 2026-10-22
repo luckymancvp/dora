@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-query";
 import { buildDeliveryTrackingQuery } from "@/lib/delivery/deliveryTracking";
 import { REVIEW_PENDING_POLL_MS, hasPendingReviewRequest } from "@/lib/delivery/reviewRequest";
+import { REVIEW_REQUEST_DEFAULT_TEMPLATE_ID } from "@/lib/types/delivery";
 import type {
   BulkRefreshJob,
   BulkRefreshRequest,
@@ -31,6 +32,7 @@ import type {
   ReviewRequestTemplate,
   ReviewRequestTemplateDeleteResult,
   ReviewRequestTemplateInput,
+  ReviewRequestTemplateUpdate,
   ReviewRequestTemplatesResponse,
 } from "@/lib/types/delivery";
 
@@ -395,8 +397,9 @@ export function useCreateReviewRequestTemplate() {
 export function useUpdateReviewRequestTemplate() {
   const after = useAfterTemplateChanged();
   return useMutation({
-    mutationFn: ({ id, title, content }: ReviewRequestTemplateInput & { id: string }) => {
-      const body: ReviewRequestTemplateInput = { title, content };
+    // §15: mẫu `default` chỉ gửi `{content}` (tiêu đề cố định) — `title` vắng thì không gửi.
+    mutationFn: ({ id, title, content }: ReviewRequestTemplateUpdate & { id: string }) => {
+      const body: ReviewRequestTemplateUpdate = title === undefined ? { content } : { title, content };
       return deliveryFetch<ReviewRequestTemplate>(templateUrl(id), jsonPost(body, "PUT"));
     },
     onSuccess: (tpl) => after.patch((items) => items.map((t) => (t.id === tpl.id ? tpl : t))),
@@ -410,6 +413,19 @@ export function useDeleteReviewRequestTemplate() {
     mutationFn: (id: string) =>
       deliveryFetch<ReviewRequestTemplateDeleteResult>(templateUrl(id), { method: "DELETE" }),
     onSuccess: (_res, id) => after.patch((items) => items.filter((t) => t.id !== id)),
+    onError: after.refetch,
+  });
+}
+
+/** §15: POST /templates/default/reset — khôi phục nội dung gốc của mẫu mặc định hệ thống. */
+export function useResetDefaultReviewRequestTemplate() {
+  const after = useAfterTemplateChanged();
+  return useMutation({
+    mutationFn: () =>
+      deliveryFetch<ReviewRequestTemplate>(`${templateUrl(REVIEW_REQUEST_DEFAULT_TEMPLATE_ID)}/reset`, {
+        method: "POST",
+      }),
+    onSuccess: (tpl) => after.patch((items) => items.map((t) => (t.id === tpl.id ? tpl : t))),
     onError: after.refetch,
   });
 }
