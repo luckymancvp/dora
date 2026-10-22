@@ -282,6 +282,8 @@ function DeliveryScreen({ initial }: { initial: TrackingUrlState }) {
           onReviewTemplates={() => setReviewDialog("templates")}
           onReviewSettings={() => setReviewDialog("settings")}
           selectedCount={selection.size}
+          loading={loading}
+          onReload={handleReload}
         />
       </DeliveryHeader>
 
@@ -297,13 +299,7 @@ function DeliveryScreen({ initial }: { initial: TrackingUrlState }) {
         onChange={(status) => update({ status, rating: null })}
       />
 
-      <DeliveryFilters
-        filters={filters}
-        data={data}
-        loading={loading}
-        onChange={update}
-        onReload={handleReload}
-      />
+      <DeliveryFilters filters={filters} data={data} onChange={update} />
 
       {list.error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

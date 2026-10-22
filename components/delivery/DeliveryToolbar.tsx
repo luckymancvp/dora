@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, Loader2 } from "lucide-react";
+import { Download, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DeliveryUtilsDropdown } from "@/components/delivery/DeliveryUtilsDropdown";
 import { doraProjectLabel } from "@/lib/delivery/deliveryTracking";
@@ -26,6 +26,8 @@ export function DeliveryToolbar({
   onReviewTemplates,
   onReviewSettings,
   selectedCount,
+  loading,
+  onReload,
 }: {
   project: string;
   projects: DeliveryProjectsResponse | undefined;
@@ -39,6 +41,9 @@ export function DeliveryToolbar({
   onReviewSettings: () => void;
   /** Số mã đang chọn (badge trên mục Request reviews). */
   selectedCount: number;
+  /** Danh sách đang tải (không tính lần tải ngầm của Request reviews). */
+  loading: boolean;
+  onReload: () => void;
 }) {
   const doraShops = projects?.doraShops ?? null;
   const showDora = doraShops !== null || isDoraProjectId(project);
@@ -52,6 +57,16 @@ export function DeliveryToolbar({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+      <Button
+        variant="outline"
+        size="lg"
+        disabled={loading}
+        onClick={onReload}
+        title="Tải lại danh sách từ Mera (không đọc Etsy)"
+      >
+        <RefreshCw className="h-3.5 w-3.5" /> Tải lại
+      </Button>
       <Button
         variant="outline"
         size="lg"
