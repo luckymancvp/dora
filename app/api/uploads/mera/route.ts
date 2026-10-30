@@ -10,7 +10,11 @@ const EXT: Record<string, string> = {
   "image/gif": "gif",
   "image/webp": "webp",
 };
-const MAX_BYTES = 20 * 1024 * 1024;
+// 50MB: Mera đẩy mockup >4MB qua chế độ {url} (Wasabi) — đo prod 60 ngày tới 2026-10-30: p99 21MB, max 25.8MB.
+const MAX_BYTES = 50 * 1024 * 1024;
+
+// Tải 25MB từ Wasabi rồi put lên Blob có thể vượt 10s mặc định.
+export const maxDuration = 60;
 
 /**
  * POST /api/uploads/mera — đặt một ảnh vào Vercel Blob và trả về public URL.
@@ -26,7 +30,7 @@ const MAX_BYTES = 20 * 1024 * 1024;
  *    API đã xác thực) → không phụ thuộc việc file Drive có public hay không. Giới hạn
  *    ~4.5MB body của Serverless Function.
  *  - body JSON {url}: server tự tải. Không giới hạn kích thước, nhưng URL phải tải
- *    được mà không cần đăng nhập.
+ *    được mà không cần đăng nhập. Mera dùng cách này cho mockup >4MB (đặt lên Wasabi trước).
  *
  * Auth: CHỈ x-api-key khớp MERA_INTERNAL_API_KEY (máy gọi máy, không có session).
  * Middleware miễn auth cho cả /api/uploads nên route phải tự gác.
