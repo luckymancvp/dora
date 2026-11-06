@@ -59,6 +59,49 @@ export async function resolveShopUserIdByName(shopName: string): Promise<number 
   }
 }
 
+// Cache shop_id → chủ shop (TTL ngắn) cho resolveShopOwnerByShopId.
+const shopOwnerCache = new Map<number, { v: ShopOwner | null; at: number }>();
+
+/** Phía shop của 1 hội thoại: user_id chủ shop (= conversations.user_data.user_id) + tên shop. */
+export interface ShopOwner {
+  userId: number | null;
+  shopName: string;
+}
+
+/**
+ * Tra shop theo Etsy shop_id THẬT (etsy_orders.data.shop_id) → user_id chủ shop + tên shop.
+ * Dùng để chỉ lấy hội thoại của ĐÚNG shop bán đơn: cùng 1 khách có thể đã nhắn nhiều shop
+ * (vd shop cũ đã chết) và hội thoại chỉ gửi được qua extension của shop sở hữu nó.
+ * null khi shop không có trong dora-master.stores.
+ */
+export async function resolveShopOwnerByShopId(shopId: number): Promise<ShopOwner | null> {
+  if (!shopId || shopId <= 0) return null;
+  const hit = shopOwnerCache.get(shopId);
+  if (hit && Date.now() - hit.at < SHOP_USER_ID_TTL_MS) return hit.v;
+  try {
+    const coll = await getStoresCollection();
+    const doc = await coll.findOne({
+      type: "Etsy",
+      "data.context.data.current_shop.shop_id": shopId,
+    } as Parameters<typeof coll.findOne>[0]);
+    let v: ShopOwner | null = null;
+    if (doc) {
+      const ctx = doc.data?.context?.data;
+      const uid = ctx?.current_user?.user_id;
+      v = {
+        userId: typeof uid === "number" && uid > 0 ? uid : null,
+        shopName: (typeof ctx?.current_shop?.shop_name === "string" && ctx.current_shop.shop_name) || doc.name || "",
+      };
+      if (!v.userId && !v.shopName) v = null;
+    }
+    shopOwnerCache.set(shopId, { v, at: Date.now() });
+    return v;
+  } catch (e) {
+    console.warn("[resolveShopOwnerByShopId] failed:", (e as Error)?.message);
+    return null;
+  }
+}
+
 /**
  * Map shop_id → shop_name từ dora-master.stores (dựng 1 lần để resolve shop
  * của đơn không cần query từng doc). Bỏ qua store thiếu shop_id/shop_name.

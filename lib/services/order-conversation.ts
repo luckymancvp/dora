@@ -6,7 +6,7 @@ import {
 } from "@/lib/db/collections";
 import { getConversationMessages } from "@/lib/services/message-read";
 import { parseOrderConvoMessages } from "@/lib/services/order-conversation-sync";
-import { resolveShopUserIdByName } from "@/lib/services/shop-read";
+import { resolveShopOwnerByShopId, resolveShopUserIdByName } from "@/lib/services/shop-read";
 import { asNumber, asString, decodeHtmlEntities, firstString, getPath } from "@/lib/services/etsy-utils";
 import type {
   ConversationDoc,
@@ -50,7 +50,7 @@ export async function getOrderConversation(orderId: number): Promise<OrderConver
   const orders = await getEtsyOrdersCollection();
   const order = (await orders.findOne(
     { "data.order_id": orderId },
-    { projection: { "data.buyer": 1, "data.buyer_id": 1 } },
+    { projection: { "data.buyer": 1, "data.buyer_id": 1, "data.shop_id": 1 } },
   )) as WithId<EtsyOrderDoc> | null;
 
   const buyerName = order
@@ -73,9 +73,24 @@ export async function getOrderConversation(orderId: number): Promise<OrderConver
   }
 
   if (or.length > 0) {
+    // CHỈ hội thoại của shop bán đơn này. Cùng 1 khách có thể đã nhắn shop khác (vd shop cũ
+    // đã chết): lấy nhầm thread đó thì tin gửi đi qua extension shop kia → "no active browsers
+    // found in channel <shop cũ>", còn khách không bao giờ nhận được (ca DAC-4222422814).
+    // Phía shop của hội thoại = user_data.user_id (chủ shop); user_data.shop_name là lưới đỡ
+    // cho hội thoại sync qua detail chưa có user_id. Shop chưa có trong stores → giữ như cũ.
+    const shopId = order ? asNumber(getPath(order.data, "shop_id")) : undefined;
+    const shop = shopId ? await resolveShopOwnerByShopId(shopId) : null;
+    const shopOr: Record<string, unknown>[] = [];
+    if (shop?.userId) shopOr.push({ "user_data.user_id": shop.userId });
+    if (shop?.shopName) shopOr.push({ "user_data.shop_name": shop.shopName });
+    const filter = shopOr.length > 0 ? { $and: [{ $or: or }, { $or: shopOr }] } : { $or: or };
+    if (shopOr.length === 0) {
+      console.warn(`[getOrderConversation] order ${orderId}: shop ${shopId ?? "?"} not in stores — matching buyer across all shops`);
+    }
+
     const convColl = await getConversationsCollection();
     const conv = (await convColl.findOne(
-      { $or: or } as Parameters<typeof convColl.findOne>[0],
+      filter as Parameters<typeof convColl.findOne>[0],
       { projection: { "etsy.conversation_id": 1 }, sort: { lastMessageDate: -1 } },
     )) as WithId<ConversationDoc> | null;
 
