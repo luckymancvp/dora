@@ -125,7 +125,7 @@ export async function buildSearchClause(
       or.push({
         "etsy.buyer_info.receipt_history.receipt_id": { $in: parsed.orderIds },
       });
-      or.push({ "etsy.order_info.order_id": { $in: parsed.orderIds } });
+      or.push({ "etsy.order_details.order_info.order_id": { $in: parsed.orderIds } });
     }
     // Guest buyer: khớp qua buyer_id của đơn trong etsy_orders.
     if (buyerIds.length > 0) {

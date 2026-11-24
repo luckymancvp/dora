@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PackageCheck, Check, ChevronDown } from "lucide-react";
 import { useStatusNames } from "@/lib/hooks/useSheets";
+import { useMeraStatuses } from "@/lib/hooks/useMera";
 import { cn } from "@/lib/utils";
 
 export function SheetStatusFilter({
@@ -33,11 +34,13 @@ export function SheetStatusFilter({
     );
   };
 
+  // Bộ lọc khớp cả status trên Mera (đơn mới không còn trên Sheet) → liệt kê thêm status cấu hình
+  // ở Mera mà danh sách của dora-1 chưa có. Mera lỗi/chưa cấu hình → chỉ còn danh sách cũ.
+  const meraStatuses = useMeraStatuses().data?.statuses ?? [];
+  const names = [...statuses, ...meraStatuses.filter((s) => !statuses.includes(s))];
+
   // Đảm bảo các status đang chọn nhưng không còn trong danh sách vẫn hiện để bỏ chọn được.
-  const rows = [
-    ...statuses,
-    ...selected.filter((s) => !statuses.includes(s)),
-  ];
+  const rows = [...names, ...selected.filter((s) => !names.includes(s))];
 
   return (
     <div ref={ref} className="relative">

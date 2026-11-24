@@ -19,14 +19,31 @@ async function fetchStatusesForReceipts(receiptIds: number[]): Promise<string[]>
   return [...seen];
 }
 
-/** Trích xuất mảng receipt_id từ etsy.buyer_info.receipt_history. */
+/**
+ * Receipt của hội thoại: etsy.buyer_info.receipt_history + mã đơn ở etsy.order_details.
+ * Khách guest có receipt_history RỖNG, nhưng hội thoại mở từ trang đơn vẫn mang mã đơn trong
+ * order_details — thiếu nguồn này thì hội thoại guest không bao giờ có sheetStatuses.
+ */
 function extractReceiptIds(etsy: Record<string, unknown>): number[] {
   const rawList = getPath(etsy, "buyer_info.receipt_history");
-  if (!Array.isArray(rawList)) return [];
-  return rawList
-    .map((r) => (isObject(r) ? asNumber(r["receipt_id"]) ?? 0 : 0))
-    .filter(Boolean);
+  const ids = new Set<number>();
+  if (Array.isArray(rawList)) {
+    for (const r of rawList) {
+      const id = isObject(r) ? asNumber(r["receipt_id"]) ?? 0 : 0;
+      if (id) ids.add(id);
+    }
+  }
+  const orderId = asNumber(getPath(etsy, "order_details.order_info.order_id")) ?? 0;
+  if (orderId) ids.add(orderId);
+  return [...ids];
 }
+
+/** Projection đủ cho extractReceiptIds (tránh kéo nguyên blob etsy). */
+const RECEIPT_SOURCES_PROJECTION = {
+  "etsy.conversation_id": 1,
+  "etsy.buyer_info.receipt_history.receipt_id": 1,
+  "etsy.order_details.order_info.order_id": 1,
+} as const;
 
 /**
  * Tính lại sheetStatuses cho hội thoại sở hữu receiptId sau khi ghi Status.
@@ -34,23 +51,32 @@ function extractReceiptIds(etsy: Record<string, unknown>): number[] {
  */
 export async function refreshConversationSheetStatuses(receiptId: number): Promise<void> {
   const convColl = await getConversationsCollection();
-  const conv = await convColl.findOne(
-    { "etsy.buyer_info.receipt_history.receipt_id": receiptId },
-    { projection: { "etsy.conversation_id": 1, "etsy.buyer_info.receipt_history": 1 } },
-  );
-  if (!conv) return;
+  // Một đơn có thể thuộc nhiều hội thoại (khách nhắn + hội thoại mở từ trang đơn) → cập nhật hết.
+  const convs = await convColl
+    .find(
+      {
+        $or: [
+          { "etsy.buyer_info.receipt_history.receipt_id": receiptId },
+          { "etsy.order_details.order_info.order_id": receiptId },
+        ],
+      },
+      { projection: RECEIPT_SOURCES_PROJECTION },
+    )
+    .toArray();
 
-  const convId = asNumber(conv.etsy["conversation_id"]);
-  if (!convId) return;
+  for (const conv of convs) {
+    const convId = asNumber(conv.etsy["conversation_id"]);
+    if (!convId) continue;
 
-  const receiptIds = extractReceiptIds(conv.etsy as Record<string, unknown>);
-  if (receiptIds.length === 0) return;
+    const receiptIds = extractReceiptIds(conv.etsy as Record<string, unknown>);
+    if (receiptIds.length === 0) continue;
 
-  const statuses = await fetchStatusesForReceipts(receiptIds);
-  await convColl.updateOne(
-    { "etsy.conversation_id": convId },
-    { $set: { sheetStatuses: statuses } },
-  );
+    const statuses = await fetchStatusesForReceipts(receiptIds);
+    await convColl.updateOne(
+      { "etsy.conversation_id": convId },
+      { $set: { sheetStatuses: statuses } },
+    );
+  }
 }
 
 /**
@@ -67,8 +93,13 @@ export async function bulkRefreshSheetStatuses(syncedReceiptIds: number[]): Prom
   // Tìm tất cả conversations có bất kỳ receiptId nào vừa sync.
   const convs = await convColl
     .find(
-      { "etsy.buyer_info.receipt_history.receipt_id": { $in: syncedReceiptIds } },
-      { projection: { "etsy.conversation_id": 1, "etsy.buyer_info.receipt_history": 1 } },
+      {
+        $or: [
+          { "etsy.buyer_info.receipt_history.receipt_id": { $in: syncedReceiptIds } },
+          { "etsy.order_details.order_info.order_id": { $in: syncedReceiptIds } },
+        ],
+      },
+      { projection: RECEIPT_SOURCES_PROJECTION },
     )
     .toArray();
   if (convs.length === 0) return;

@@ -50,9 +50,22 @@ export function normalizeStore(s: string): string {
 /**
  * Suy ra khoá "{receiptId}-{transactionId}" từ Item ID = prefix-receipt-transaction.
  * Lấy 2 đoạn số ở cuối (prefix-independent, kể cả prefix có dấu gạch). Null nếu không hợp lệ.
+ *
+ * Item ID có hậu tố thứ tự (đơn gửi lại/tách dòng: "DAC-4178988384-5222400436-1") thì bỏ hậu tố
+ * trước — nếu không sẽ lấy nhầm transaction làm receipt và dòng đó không gắn được vào đơn nào.
+ * Chỉ bỏ khi hai đoạn đứng trước đều là id dài (≥9 chữ số), để "PRO-3881349513-1" giữ nguyên.
  */
 export function deriveReceiptTxKey(itemId: string): string | null {
   const parts = itemId.trim().split("-").filter((p) => p !== "");
+  const isLongId = (p: string | undefined) => !!p && /^\d{9,}$/.test(p);
+  if (
+    parts.length >= 3 &&
+    /^\d{1,4}$/.test(parts[parts.length - 1]) &&
+    isLongId(parts[parts.length - 2]) &&
+    isLongId(parts[parts.length - 3])
+  ) {
+    parts.pop();
+  }
   if (parts.length < 2) return null;
   const tx = parts[parts.length - 1];
   const receipt = parts[parts.length - 2];
