@@ -24,7 +24,13 @@ const CONVERSATION_INDEXES: IndexDef[] = [
     keys: { "etsy.buyer_info.receipt_history.receipt_id": 1 },
     options: { name: "idx_receipt_id" },
   },
-  { keys: { "etsy.order_info.order_id": 1 }, options: { name: "idx_order_id" } },
+  // Mã đơn của hội thoại mở từ trang đơn nằm ở etsy.order_details.order_info.order_id (đường dẫn
+  // cũ `etsy.order_info.order_id` không tồn tại ở document nào). Cùng tên + key + sparse với index
+  // đã tạo tay trên prod (2026-11-24) và add_indexes.js của dora-backend → createIndex idempotent.
+  {
+    keys: { "etsy.order_details.order_info.order_id": 1 },
+    options: { name: "idx_order_details_order_id", sparse: true },
+  },
   // Buyer guest: Mera (fulfill) khớp order → hội thoại qua etsy_orders.data.buyer_id →
   // etsy.other_user.user_id. Không có index thì COLLSCAN ~65k doc (~200ms). Index này ĐÃ
   // được tạo tay trên prod cùng tên + key (2026-09-30) → giữ nguyên để createIndex idempotent.

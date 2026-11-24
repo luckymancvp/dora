@@ -12,6 +12,7 @@ import {
   firstString,
 } from "@/lib/services/etsy-utils";
 import { buildSearchClause } from "@/lib/services/search";
+import { getMeraStatusMatch } from "@/lib/services/mera-status-index";
 
 // Projection: chỉ lấy subfield cần cho sidebar, TRÁNH kéo nguyên blob etsy
 // (buyer_info.receipt_history, coupons, detail.messages... rất nặng).
@@ -193,8 +194,30 @@ export async function getConversations(
   }
 
   // Lọc theo trạng thái đơn sheet: khớp bất kỳ status nào được chọn.
+  // `sheetStatuses` chỉ phản ánh Google Sheet; đơn đã chuyển sang Mera không có trên Sheet nên phải
+  // khớp thêm theo receipt của đơn đang ở status đó trên Mera (xem mera-status-index.ts).
   if (opts.sheetStatuses && opts.sheetStatuses.length > 0) {
-    clauses.push({ sheetStatuses: { $in: opts.sheetStatuses } });
+    const bySheet = { sheetStatuses: { $in: opts.sheetStatuses } };
+    const mera = await getMeraStatusMatch(opts.sheetStatuses);
+    const or: Record<string, unknown>[] = [bySheet];
+    if (mera.receiptIds.length > 0) {
+      or.push({ "etsy.buyer_info.receipt_history.receipt_id": { $in: mera.receiptIds } });
+      // Hội thoại mở từ trang đơn (kể cả khách guest) mang mã đơn ở order_details.
+      or.push({ "etsy.order_details.order_info.order_id": { $in: mera.receiptIds } });
+    }
+    // Khách guest: receipt_history rỗng → sidebar dò đơn theo buyer_id; bộ lọc khớp y như vậy.
+    // Chỉ áp cho hội thoại KHÔNG nhúng đơn, vì sidebar cũng chỉ fallback trong trường hợp đó.
+    if (mera.buyerIds.length > 0) {
+      or.push({
+        "etsy.other_user.user_id": { $in: mera.buyerIds },
+        "etsy.buyer_info.receipt_history.0": { $exists: false },
+      });
+    }
+    // Đơn được nhân viên gắn tay với hội thoại ở Mera Fulfill.
+    if (mera.conversationIds.length > 0) {
+      or.push({ "etsy.conversation_id": { $in: mera.conversationIds } });
+    }
+    clauses.push(or.length > 1 ? { $or: or } : bySheet);
   }
 
   // Hai filter: bản KHÔNG cursor để đếm tổng, bản CÓ cursor để lấy trang hiện tại.
