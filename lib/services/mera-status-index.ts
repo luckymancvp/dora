@@ -27,6 +27,37 @@ interface MeraOrderItemDoc {
   status?: string;
 }
 
+/** Danh sách status đang dùng ít đổi hơn nhiều so với đơn nào ở status nào → cache dài hơn. */
+const IN_USE_TTL_MS = 5 * 60 * 1000;
+let inUseCache: { at: number; statuses: Promise<string[]> } | null = null;
+
+/**
+ * Các status ĐANG có trên đơn Mera (distinct order_items.status) — cho dropdown bộ lọc Status.
+ * Khác danh sách status cấu hình (/api/v1/statuses): đơn còn mang cả status hệ thống tự gán như
+ * "NO PRODUCT TYPE" / "NO BASE TEMPLATE" không nằm trong cấu hình, nên chỉ dựa cấu hình thì
+ * không chọn lọc được các đơn đó. Lỗi đọc Mera ⇒ [] (dropdown vẫn còn danh sách của dora-1).
+ */
+export async function getMeraStatusesInUse(): Promise<string[]> {
+  const now = Date.now();
+  if (inUseCache && now - inUseCache.at < IN_USE_TTL_MS) return inUseCache.statuses;
+  const statuses = (async () => {
+    const client = await clientPromise;
+    const raw = await client
+      .db(MERA_ORDERS_DB)
+      .collection<MeraOrderItemDoc>("order_items")
+      .distinct("status");
+    const names = new Set<string>();
+    for (const s of raw) if (typeof s === "string" && s.trim()) names.add(s.trim());
+    return [...names].sort((a, b) => a.localeCompare(b));
+  })().catch((err) => {
+    console.error("[mera-status-index] getMeraStatusesInUse failed:", err);
+    inUseCache = null; // không giữ kết quả lỗi
+    return [] as string[];
+  });
+  inUseCache = { at: now, statuses };
+  return statuses;
+}
+
 /**
  * Các khoá để khớp hội thoại với đơn Mera — mirror ĐÚNG các nguồn đơn của sidebar
  * (conversation-detail.ts): receipt nhúng, đơn theo buyer của khách guest, đơn gắn tay ở Mera.

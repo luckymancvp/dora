@@ -29,6 +29,17 @@ export function useResolveMeraOrder(params: {
   });
 }
 
+// ---- Status ĐANG có trên đơn Mera (cho dropdown bộ lọc Status) ----
+// Gồm cả status hệ thống tự gán ("NO PRODUCT TYPE"…) không nằm trong danh sách cấu hình bên dưới.
+export function useMeraStatusesInUse() {
+  return useQuery({
+    queryKey: ["mera-statuses-in-use"],
+    queryFn: () => jsonFetch<{ statuses: string[] }>("/api/mera/statuses-in-use"),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
 // ---- Danh sách status cấu hình trên Mera ----
 // Đọc từ /api/mera/statuses (Mera cho sửa status qua UI nên KHÔNG hardcode).
 // Ít đổi → staleTime 5 phút; lỗi/thiếu env → component fallback MERA_STATUS_OPTIONS.
